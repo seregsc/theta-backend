@@ -117,7 +117,7 @@ Calcola correttamente "days_from_now" rispetto a {today_str} (0 = oggi, 1 = doma
     try:
         response = client.messages.create(
             model=MODEL,
-            max_tokens=4500,
+            max_tokens=9000,
             messages=[{"role": "user", "content": prompt}],
         )
         text = response.content[0].text.strip()
