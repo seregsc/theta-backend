@@ -16,7 +16,7 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 MODEL = "claude-sonnet-4-5"
 
-NUM_EVENTS = 5
+NUM_EVENTS = 15
 KEEP_HOURS = 168  # 7 giorni di archivio
 
 
