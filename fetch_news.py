@@ -1,4 +1,3 @@
-
 import os
 import requests
 from datetime import datetime, timedelta, timezone
@@ -15,15 +14,6 @@ TICKERS = ["AAPL", "MSFT", "NVDA", "TSLA", "GOOGL", "META", "AMZN", "SPY"]
 
 
 def fetch_news_for_tickers(tickers):
-    """
-    Scarica le news più recenti.
-    
-    Mix di due chiamate:
-    - news generiche di mercato/economia/geopolitica (per settori finanziari)
-    - news specifiche sui ticker selezionati
-    
-    Così abbiamo varietà nel database.
-    """
     published_after = (datetime.now(timezone.utc) - timedelta(hours=12)).strftime("%Y-%m-%dT%H:%M:%S")
     all_news = []
     url = "https://api.marketaux.com/v1/news/all"
@@ -68,7 +58,7 @@ def fetch_news_for_tickers(tickers):
     except Exception as e:
         print(f"  Errore ticker news: {e}")
     
-    # Deduplicazione su uuid
+    # Dedup
     seen = set()
     unique = []
     for n in all_news:
@@ -76,7 +66,6 @@ def fetch_news_for_tickers(tickers):
         if uid and uid not in seen:
             seen.add(uid)
             unique.append(n)
-    
     print(f"  Total unique news: {len(unique)}")
     return unique
 
@@ -98,39 +87,71 @@ def parse_news_item(item):
     }
 
 
-def translate_to_italian(client, title_en, summary_en):
-    prompt = f"""Traduci la seguente notizia finanziaria in italiano professionale, conciso e adatto a un consulente finanziario.
+def generate_full_analysis(client, title_en, summary_en, tickers_csv):
+    """
+    Genera traduzione italiana COMPLETA: titolo, sommario, impatto, strategia.
+    Questa è l'analisi che apparirà direttamente in Theta.
+    """
+    tickers_str = tickers_csv if tickers_csv else "—"
+    prompt = f"""Sei un analista finanziario professionista italiano. Ricevi una notizia in inglese e devi produrre un'analisi sintetica ma completa, in italiano, adatta a un consulente finanziario che la legge sull'app Theta.
 
+INPUT
 Titolo originale (EN): {title_en}
 Sommario originale (EN): {summary_en or "—"}
+Ticker citati: {tickers_str}
 
-Rispondi ESATTAMENTE in questo formato, senza preamboli, senza aggiungere altro:
+OUTPUT — rispondi ESATTAMENTE in questo formato, senza preamboli, senza commenti extra:
 
-TITOLO: <titolo italiano, max 100 caratteri, neutro e informativo>
-SOMMARIO: <sommario italiano in 1-2 frasi, max 250 caratteri, sintetico>"""
+TITOLO: <titolo in italiano, max 110 caratteri, neutro e informativo>
+
+SOMMARIO: <sommario in italiano, 3-5 frasi (400-700 caratteri), che contestualizza la notizia con i fatti chiave: chi, cosa, quando, perché. Sii ancorato al testo originale, non inventare numeri o eventi non presenti.>
+
+IMPATTO: <analisi in italiano di 2-3 frasi (200-400 caratteri) sull'impatto previsto sui mercati o sui settori coinvolti. Quali asset/settori potrebbero muoversi, in che direzione, e perché. Concreto, basato sui fatti.>
+
+STRATEGIA: <suggerimento operativo in italiano di 2-3 frasi (200-400 caratteri) su cosa potrebbe fare un consulente: monitorare un certo titolo, riallocare verso un settore, attendere conferme, ridurre rischio, ecc. Tono professionale, mai categorico, mai consiglio di acquisto/vendita diretto.>"""
     
     try:
         response = client.messages.create(
             model=MODEL,
-            max_tokens=300,
+            max_tokens=1200,
             messages=[{"role": "user", "content": prompt}],
         )
         text = response.content[0].text.strip()
-        title_it, summary_it = None, None
+        
+        # Parsing: cerca i 4 blocchi
+        sections = {"TITOLO": None, "SOMMARIO": None, "IMPATTO": None, "STRATEGIA": None}
+        current_key = None
+        current_lines = []
         for line in text.split("\n"):
             line = line.strip()
-            if line.startswith("TITOLO:"):
-                title_it = line.replace("TITOLO:", "").strip()
-            elif line.startswith("SOMMARIO:"):
-                summary_it = line.replace("SOMMARIO:", "").strip()
-        return title_it, summary_it
+            if not line:
+                if current_key and current_lines:
+                    sections[current_key] = " ".join(current_lines).strip()
+                    current_lines = []
+                continue
+            matched_header = False
+            for key in sections.keys():
+                if line.startswith(f"{key}:"):
+                    if current_key and current_lines:
+                        sections[current_key] = " ".join(current_lines).strip()
+                    current_key = key
+                    rest = line[len(key) + 1:].strip()
+                    current_lines = [rest] if rest else []
+                    matched_header = True
+                    break
+            if not matched_header and current_key:
+                current_lines.append(line)
+        # Chiudi l'ultima sezione
+        if current_key and current_lines:
+            sections[current_key] = " ".join(current_lines).strip()
+        
+        return sections["TITOLO"], sections["SOMMARIO"], sections["IMPATTO"], sections["STRATEGIA"]
     except Exception as e:
-        print(f"  ✗ errore traduzione: {e}")
-        return None, None
+        print(f"  ✗ errore analisi: {e}")
+        return None, None, None, None
 
 
 def upsert_news(supabase, news_items, client):
-    """Salva le news nuove e aggiorna quelle esistenti senza traduzione italiana."""
     new_count, updated_count = 0, 0
     
     for item in news_items:
@@ -138,26 +159,36 @@ def upsert_news(supabase, news_items, client):
         if not ext_id:
             continue
         
-        existing = supabase.table("news").select("id, title_it").eq("external_id", ext_id).execute()
+        existing = supabase.table("news").select("id, title_it, impact_it").eq("external_id", ext_id).execute()
         
         if existing.data:
             existing_row = existing.data[0]
-            if existing_row.get("title_it"):
-                print(f"  · già tradotta: {(item.get('title') or '')[:60]}…")
+            # Se già ha la traduzione completa (con impact), salta
+            if existing_row.get("title_it") and existing_row.get("impact_it"):
+                print(f"  · già analizzata: {(item.get('title') or '')[:60]}…")
                 continue
             
-            title_it, summary_it = translate_to_italian(client, item.get("title"), item.get("summary"))
+            # Altrimenti rigenera analisi completa
+            title_it, summary_it, impact_it, strategy_it = generate_full_analysis(
+                client, item.get("title"), item.get("summary"), item.get("tickers")
+            )
             if title_it:
                 supabase.table("news").update({
                     "title_it": title_it,
                     "summary_it": summary_it,
+                    "impact_it": impact_it,
+                    "strategy_it": strategy_it,
                 }).eq("id", existing_row["id"]).execute()
                 updated_count += 1
                 print(f"  ↻ aggiornata: {title_it[:60]}…")
         else:
-            title_it, summary_it = translate_to_italian(client, item.get("title"), item.get("summary"))
+            title_it, summary_it, impact_it, strategy_it = generate_full_analysis(
+                client, item.get("title"), item.get("summary"), item.get("tickers")
+            )
             item["title_it"] = title_it
             item["summary_it"] = summary_it
+            item["impact_it"] = impact_it
+            item["strategy_it"] = strategy_it
             try:
                 supabase.table("news").insert(item).execute()
                 new_count += 1
@@ -181,9 +212,9 @@ def main():
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
     client = Anthropic(api_key=ANTHROPIC_API_KEY)
     
-    print("Traduzione e salvataggio...")
+    print("Analisi completa AI e salvataggio...")
     new_count, updated_count = upsert_news(supabase, items, client)
-    print(f"\n✓ {new_count} news nuove, {updated_count} aggiornate con traduzione italiana.")
+    print(f"\n✓ {new_count} news nuove, {updated_count} aggiornate con analisi italiana.")
 
 
 if __name__ == "__main__":
