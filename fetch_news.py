@@ -1,3 +1,4 @@
+
 import os
 import requests
 from datetime import datetime, timedelta, timezone
@@ -13,22 +14,22 @@ MODEL = "claude-sonnet-4-5"
 TICKERS = ["AAPL", "MSFT", "NVDA", "TSLA", "GOOGL", "META", "AMZN", "SPY"]
 
 
-def def fetch_news_for_tickers(tickers):
+def fetch_news_for_tickers(tickers):
     """
     Scarica le news più recenti.
     
     Mix di due chiamate:
-    - news generiche di mercato/economia/geopolitica (industries=finance)
+    - news generiche di mercato/economia/geopolitica (per settori finanziari)
     - news specifiche sui ticker selezionati
     
     Così abbiamo varietà nel database.
     """
     published_after = (datetime.now(timezone.utc) - timedelta(hours=12)).strftime("%Y-%m-%dT%H:%M:%S")
     all_news = []
-    
-    # Chiamata 1: news generiche finanza/economia
     url = "https://api.marketaux.com/v1/news/all"
-    params = {
+    
+    # Chiamata 1: news generiche finanza/tech/energia/salute
+    params1 = {
         "industries": "Finance,Technology,Energy,Healthcare",
         "filter_entities": "true",
         "language": "en",
@@ -37,7 +38,7 @@ def def fetch_news_for_tickers(tickers):
         "api_token": MARKETAUX_KEY,
     }
     try:
-        r = requests.get(url, params=params, timeout=15)
+        r = requests.get(url, params=params1, timeout=15)
         data = r.json()
         if "data" in data:
             all_news.extend(data["data"])
@@ -47,8 +48,8 @@ def def fetch_news_for_tickers(tickers):
     except Exception as e:
         print(f"  Errore generic news: {e}")
     
-    # Chiamata 2: news sui ticker specifici (se sono rimaste richieste)
-    params = {
+    # Chiamata 2: news sui ticker specifici
+    params2 = {
         "symbols": ",".join(tickers),
         "filter_entities": "true",
         "language": "en",
@@ -57,7 +58,7 @@ def def fetch_news_for_tickers(tickers):
         "api_token": MARKETAUX_KEY,
     }
     try:
-        r = requests.get(url, params=params, timeout=15)
+        r = requests.get(url, params=params2, timeout=15)
         data = r.json()
         if "data" in data:
             all_news.extend(data["data"])
@@ -137,17 +138,14 @@ def upsert_news(supabase, news_items, client):
         if not ext_id:
             continue
         
-        # Controlla se esiste già nel database
         existing = supabase.table("news").select("id, title_it").eq("external_id", ext_id).execute()
         
         if existing.data:
-            # Esiste già: traduciamo solo se title_it è vuoto
             existing_row = existing.data[0]
             if existing_row.get("title_it"):
                 print(f"  · già tradotta: {(item.get('title') or '')[:60]}…")
                 continue
             
-            # Traduci e aggiorna
             title_it, summary_it = translate_to_italian(client, item.get("title"), item.get("summary"))
             if title_it:
                 supabase.table("news").update({
@@ -157,7 +155,6 @@ def upsert_news(supabase, news_items, client):
                 updated_count += 1
                 print(f"  ↻ aggiornata: {title_it[:60]}…")
         else:
-            # Nuova: traduci e inserisci
             title_it, summary_it = translate_to_italian(client, item.get("title"), item.get("summary"))
             item["title_it"] = title_it
             item["summary_it"] = summary_it
