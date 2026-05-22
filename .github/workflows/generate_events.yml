@@ -2,7 +2,8 @@ name: Generate Events
 
 on:
   schedule:
-    - cron: '30 6 * * 1'
+    # Domenica sera (rilascio settimanale FF) + ogni mattina alle 6:30 UTC
+    - cron: '30 6 * * *'
   workflow_dispatch:
 
 jobs:
