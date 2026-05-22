@@ -1,3 +1,9 @@
+
+"""
+Backfill news analysis.
+Riprocessa SOLO le news che hanno analisi mancante o incompleta.
+Pensato per girare in automatico ogni poche ore senza sprecare credit Claude.
+"""
 import os
 import re
 from supabase import create_client
@@ -10,7 +16,6 @@ MODEL = "claude-sonnet-4-5"
 
 
 def parse_sections(text):
-    """Parser tollerante per estrarre TITOLO, SOMMARIO, IMPATTO, STRATEGIA."""
     keys = ["TITOLO", "SOMMARIO", "IMPATTO", "STRATEGIA"]
     sections = {k: None for k in keys}
     pattern = r"(?:^|\n)\s*(?:#+\s*)?(?:\*\*)?(TITOLO|SOMMARIO|IMPATTO|STRATEGIA)(?:\*\*)?\s*[:\-—]\s*"
@@ -79,26 +84,32 @@ def main():
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
     client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
+    # FILTRO INTELLIGENTE: solo news con analisi mancante o incompleta
     result = supabase.table("news") \
         .select("id, title, summary, tickers, title_it, summary_it, impact_it, strategy_it") \
         .execute()
 
     all_rows = result.data or []
-    # Considera da rigenerare tutte le news (per aggiornare lo stile al TU)
-    rows = all_rows
-    print(f"Database: {len(all_rows)} news totali, riprocesso tutte per aggiornare stile.\n")
+    rows_to_process = [
+        r for r in all_rows
+        if not r.get("title_it") or not r.get("summary_it")
+        or not r.get("impact_it") or not r.get("strategy_it")
+    ]
 
-    if not rows:
-        print("Nulla da fare.")
+    print(f"Database: {len(all_rows)} news totali.")
+    print(f"Da riprocessare (analisi incompleta): {len(rows_to_process)}\n")
+
+    if not rows_to_process:
+        print("Tutte le news sono complete. Nessun lavoro da fare.")
         return
 
     updated = 0
     failed = 0
-    for i, row in enumerate(rows, 1):
+    for i, row in enumerate(rows_to_process, 1):
         title_en = row.get("title")
         summary_en = row.get("summary")
         tickers = row.get("tickers")
-        print(f"[{i}/{len(rows)}] {(title_en or '')[:60]}")
+        print(f"[{i}/{len(rows_to_process)}] {(title_en or '')[:60]}")
 
         title_it, summary_it, impact_it, strategy_it, raw_text = generate_full_analysis(
             client, title_en, summary_en, tickers
@@ -119,11 +130,11 @@ def main():
                 "strategy_it": strategy_it,
             }).eq("id", row["id"]).execute()
             updated += 1
-            print(f"  ok aggiornata")
+            print(f"  ok recuperata")
         except Exception as e:
             print(f"  errore update: {e}")
 
-    print(f"\nFatto: {updated}/{len(rows)} aggiornate, {failed} fallite.")
+    print(f"\nFatto: {updated}/{len(rows_to_process)} recuperate, {failed} fallite.")
 
 
 if __name__ == "__main__":
