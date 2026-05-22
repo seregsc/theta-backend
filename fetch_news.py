@@ -13,10 +13,41 @@ MODEL = "claude-sonnet-4-5"
 TICKERS = ["AAPL", "MSFT", "NVDA", "TSLA", "GOOGL", "META", "AMZN", "SPY"]
 
 
-def fetch_news_for_tickers(tickers):
-    """Scarica le news più recenti (ultime 12 ore)."""
+def def fetch_news_for_tickers(tickers):
+    """
+    Scarica le news più recenti.
+    
+    Mix di due chiamate:
+    - news generiche di mercato/economia/geopolitica (industries=finance)
+    - news specifiche sui ticker selezionati
+    
+    Così abbiamo varietà nel database.
+    """
     published_after = (datetime.now(timezone.utc) - timedelta(hours=12)).strftime("%Y-%m-%dT%H:%M:%S")
+    all_news = []
+    
+    # Chiamata 1: news generiche finanza/economia
     url = "https://api.marketaux.com/v1/news/all"
+    params = {
+        "industries": "Finance,Technology,Energy,Healthcare",
+        "filter_entities": "true",
+        "language": "en",
+        "limit": 3,
+        "published_after": published_after,
+        "api_token": MARKETAUX_KEY,
+    }
+    try:
+        r = requests.get(url, params=params, timeout=15)
+        data = r.json()
+        if "data" in data:
+            all_news.extend(data["data"])
+            print(f"  Generic finance news: {len(data['data'])}")
+        else:
+            print(f"  Generic news error: {data.get('message', data)}")
+    except Exception as e:
+        print(f"  Errore generic news: {e}")
+    
+    # Chiamata 2: news sui ticker specifici (se sono rimaste richieste)
     params = {
         "symbols": ",".join(tickers),
         "filter_entities": "true",
@@ -26,15 +57,27 @@ def fetch_news_for_tickers(tickers):
         "api_token": MARKETAUX_KEY,
     }
     try:
-        response = requests.get(url, params=params, timeout=15)
-        data = response.json()
+        r = requests.get(url, params=params, timeout=15)
+        data = r.json()
+        if "data" in data:
+            all_news.extend(data["data"])
+            print(f"  Ticker-specific news: {len(data['data'])}")
+        else:
+            print(f"  Ticker news error: {data.get('message', data)}")
     except Exception as e:
-        print(f"Errore di rete: {e}")
-        return []
-    if "data" not in data:
-        print(f"Risposta API inattesa: {data}")
-        return []
-    return data["data"]
+        print(f"  Errore ticker news: {e}")
+    
+    # Deduplicazione su uuid
+    seen = set()
+    unique = []
+    for n in all_news:
+        uid = n.get("uuid")
+        if uid and uid not in seen:
+            seen.add(uid)
+            unique.append(n)
+    
+    print(f"  Total unique news: {len(unique)}")
+    return unique
 
 
 def parse_news_item(item):
