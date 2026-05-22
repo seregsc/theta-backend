@@ -1,6 +1,7 @@
+
 """
 Generatore di eventi economici live per il calendario di Theta.
-Genera un evento per volta (15 chiamate Claude piccole, parsing robusto).
+Genera 8 eventi market-moving ad alto impatto, uno per volta.
 """
 import os
 import json
@@ -73,26 +74,35 @@ def generate_single_event(client, news_context, event_num, total, already_done_t
 
     prompt = f"""Sei un analista finanziario senior italiano. Compila il calendario economico per la settimana che inizia oggi ({today_str}) e finisce il {week_end}.
 
-Sto generando l'evento {event_num} di {total} per questa settimana.
+Sto generando l'evento {event_num} di {total}.
 
 Eventi GIÀ generati (non duplicare):
 {avoid_list}
 
-Devi generare UN evento diverso da quelli sopra. Usa la tua conoscenza del calendario macro standard:
-- Riunioni banche centrali (Fed FOMC, BCE, BoE, BoJ) — date note
-- Pubblicazione dati macro (CPI USA, NFP primo venerdì del mese, PCE, ISM, dati eurozona, dati Italia, Cina)
-- Earnings di grandi società (Magnifici 7, principali europee, italiane FTSE MIB)
-- Eventi geopolitici noti calendarizzati
+REGOLA CRUCIALE — Considera SOLO eventi market-moving di alta rilevanza per consulenti finanziari. NIENTE eventi minori, secondari, o di nicchia.
+
+PRIORITÀ degli eventi da considerare (in ordine):
+1. Decisioni banche centrali maggiori (Fed FOMC, BCE, BoE, BoJ) — sempre HIGH
+2. Dati macro PRINCIPALI: CPI USA, PCE Core, NFP/Unemployment USA, GDP USA, ISM Manufacturing/Services, CPI Eurozona, PMI Eurozona — HIGH
+3. Earnings di mega-cap che muovono indici: Nvidia, Apple, Microsoft, Alphabet, Amazon, Meta, Tesla — HIGH
+4. Earnings di top blue-chip importanti: JPMorgan, Goldman, Berkshire, top 5 italiane FTSE MIB (Eni, Enel, Intesa, Unicredit, Stellantis) — MED/HIGH
+5. Decisioni politiche di forte impatto: vertici G7/G20, scadenze tariffarie USA-Cina, elezioni chiave, OPEC+ — HIGH
+
+EVITARE assolutamente:
+- Earnings di mid-cap o piccole società poco seguite
+- Dati macro secondari (jobless claims settimanali, scorte, dati statali minori)
+- Eventi di settori troppo nicchia (es. dati zucchero, agricoltura specifica)
+- Earnings di società di cui pochi consulenti italiani si occupano
 
 CONTESTO — News recenti dal mercato:
 {news_context}
 
 ISTRUZIONI
-- Evento REALE e PLAUSIBILE nella settimana indicata.
+- Evento REALE e PLAUSIBILE nella settimana indicata (non inventato, deve essere un evento del calendario macro standard).
 - Italiano professionale.
-- Ticker reali (AAPL, NVDA, MSFT, TSLA, ENI.MI, ecc.).
-- NON usare virgolette doppie all'interno dei valori di testo: se serve una citazione usa virgolette singole o «caporali».
-- NON usare newline (a capo) dentro i valori stringa: scrivi tutto su una riga.
+- Ticker reali (AAPL, NVDA, MSFT, TSLA, ENI.MI, UCG.MI, ISP.MI, RHM.DE, ecc.).
+- NON usare virgolette doppie all'interno dei valori di testo: usa virgolette singole o «caporali».
+- NON usare newline dentro i valori stringa: tutto su una riga.
 
 OUTPUT — rispondi SOLO con JSON puro, un singolo oggetto, senza markdown, senza ```, senza preamboli:
 
