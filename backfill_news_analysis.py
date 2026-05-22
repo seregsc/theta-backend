@@ -10,43 +10,34 @@ MODEL = "claude-sonnet-4-5"
 
 
 def parse_sections(text):
-    """
-    Parser tollerante per estrarre TITOLO, SOMMARIO, IMPATTO, STRATEGIA.
-    Accetta varianti: TITOLO:, **TITOLO:**, ## TITOLO, Titolo:, ecc.
-    """
+    """Parser tollerante per estrarre TITOLO, SOMMARIO, IMPATTO, STRATEGIA."""
     keys = ["TITOLO", "SOMMARIO", "IMPATTO", "STRATEGIA"]
     sections = {k: None for k in keys}
-
-    # Regex che cerca ogni etichetta con varie possibili decorazioni markdown
-    # Es: **TITOLO:**, ## TITOLO:, TITOLO -, Titolo:
     pattern = r"(?:^|\n)\s*(?:#+\s*)?(?:\*\*)?(TITOLO|SOMMARIO|IMPATTO|STRATEGIA)(?:\*\*)?\s*[:\-—]\s*"
     matches = list(re.finditer(pattern, text, re.IGNORECASE))
-
     if not matches:
         return sections
-
     for i, m in enumerate(matches):
         key = m.group(1).upper()
         start = m.end()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
         content = text[start:end].strip()
-        # Pulisci asterischi/cancelletti residui all'inizio/fine
         content = re.sub(r"^[*#\s]+", "", content)
         content = re.sub(r"[*#\s]+$", "", content)
         sections[key] = content if content else None
-
     return sections
 
 
 def generate_full_analysis(client, title_en, summary_en, tickers_csv):
     tickers_str = tickers_csv if tickers_csv else "—"
-    prompt = f"""Sei un analista finanziario senior italiano che scrive per consulenti professionisti. Riceverai una notizia in inglese e devi produrre un'analisi completa in italiano fluido e professionale.
+    prompt = f"""Sei un analista finanziario senior italiano che scrive direttamente per UN consulente finanziario specifico (l'utente di Theta). Riceverai una notizia in inglese e devi produrre un'analisi completa in italiano professionale.
 
-REGOLE
+REGOLE GENERALI
 - Italiano corretto, lessico finanziario professionale.
 - Usa SOLO informazioni presenti nel testo originale. Non inventare numeri, date, eventi.
-- Tono neutro, informativo, mai sensazionalistico.
-- Non dare consigli espliciti di acquisto/vendita.
+- Tono neutro e informativo nei primi 3 blocchi (TITOLO, SOMMARIO, IMPATTO).
+- Nella STRATEGIA parla direttamente al consulente al TU («valuta», «monitora», «considera», «alleggerisci»). Mai usare «i consulenti potrebbero», mai forme impersonali.
+- Non dare consigli espliciti di acquisto/vendita: usa sempre forme condizionali («se il segnale si conferma...», «per i clienti con profilo X...»).
 - NON usare markdown (no asterischi, no cancelletti, no grassetto). Solo testo semplice.
 
 INPUT
@@ -58,11 +49,11 @@ OUTPUT — rispondi ESATTAMENTE in questo formato con 4 blocchi etichettati, sen
 
 TITOLO: <titolo italiano, max 110 caratteri, riformulato non tradotto letterale>
 
-SOMMARIO: <riassunto 4-6 frasi (600-900 caratteri). Contesto, dati chiave, attori, significato per il mercato. Stile articolo giornalistico. Se l'originale è povero, espandi con contesto settoriale plausibile ma senza inventare fatti specifici.>
+SOMMARIO: <riassunto 4-6 frasi (600-900 caratteri). Contesto, dati chiave, attori, significato per il mercato. Stile articolo giornalistico breve. Se l'originale è povero, espandi con contesto settoriale plausibile ma senza inventare fatti specifici.>
 
 IMPATTO: <analisi 3-4 frasi (350-550 caratteri) sull'impatto previsto. Quali settori/asset coinvolti, in che direzione, quali correlazioni di mercato. Concreto.>
 
-STRATEGIA: <suggerimento operativo 3-4 frasi (350-550 caratteri) per un consulente. Cosa monitorare, riallocazioni settoriali, hedging, attese. Mai categorico, sempre condizionale. Cita ticker se rilevanti.>"""
+STRATEGIA: <suggerimento operativo 3-4 frasi (350-550 caratteri) rivolto direttamente al consulente al TU. Esempi di apertura: «Valuta di alleggerire...», «Monitora attentamente...», «Considera di proporre ai tuoi clienti...», «Se vedi questi segnali...». Mai «i consulenti potrebbero». Cita ticker se rilevanti.>"""
 
     try:
         response = client.messages.create(
@@ -77,7 +68,7 @@ STRATEGIA: <suggerimento operativo 3-4 frasi (350-550 caratteri) per un consulen
             sections.get("SOMMARIO"),
             sections.get("IMPATTO"),
             sections.get("STRATEGIA"),
-            text,  # restituisce anche il testo grezzo per debug
+            text,
         )
     except Exception as e:
         print(f"  errore Claude: {e}")
@@ -93,11 +84,12 @@ def main():
         .execute()
 
     all_rows = result.data or []
-    rows = [r for r in all_rows if not r.get("impact_it") or not r.get("strategy_it")]
-    print(f"Database: {len(all_rows)} news totali, {len(rows)} senza analisi completa.\n")
+    # Considera da rigenerare tutte le news (per aggiornare lo stile al TU)
+    rows = all_rows
+    print(f"Database: {len(all_rows)} news totali, riprocesso tutte per aggiornare stile.\n")
 
     if not rows:
-        print("Tutte le news sono gia state analizzate.")
+        print("Nulla da fare.")
         return
 
     updated = 0
@@ -112,7 +104,6 @@ def main():
             client, title_en, summary_en, tickers
         )
 
-        # Se anche solo IMPATTO o STRATEGIA mancano, considera fallita
         if not impact_it or not strategy_it:
             failed += 1
             print(f"  parsing parziale (TITOLO={bool(title_it)}, SOMM={bool(summary_it)}, IMP={bool(impact_it)}, STR={bool(strategy_it)})")
