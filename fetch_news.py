@@ -20,7 +20,6 @@ def fetch_news_for_tickers(tickers):
     all_news = []
     url = "https://api.marketaux.com/v1/news/all"
 
-    # Chiamata 1: news generiche finanza/tech/energia/salute
     params1 = {
         "industries": "Finance,Technology,Energy,Healthcare",
         "filter_entities": "true",
@@ -40,7 +39,6 @@ def fetch_news_for_tickers(tickers):
     except Exception as e:
         print(f"  Errore generic news: {e}")
 
-    # Chiamata 2: news sui ticker specifici
     params2 = {
         "symbols": ",".join(tickers),
         "filter_entities": "true",
@@ -60,7 +58,6 @@ def fetch_news_for_tickers(tickers):
     except Exception as e:
         print(f"  Errore ticker news: {e}")
 
-    # Deduplicazione su uuid
     seen = set()
     unique = []
     for n in all_news:
@@ -91,33 +88,31 @@ def parse_news_item(item):
 
 
 def generate_full_analysis(client, title_en, summary_en, tickers_csv):
-    """
-    Genera 4 sezioni in italiano via Claude:
-    TITOLO, SOMMARIO (lungo), IMPATTO (analisi mercati), STRATEGIA (operativa).
-    """
+    """Genera TITOLO, SOMMARIO, IMPATTO, STRATEGIA in italiano via Claude."""
     tickers_str = tickers_csv if tickers_csv else "—"
-    prompt = f"""Sei un analista finanziario senior italiano che scrive per consulenti professionisti. Riceverai una notizia in inglese e devi produrre un'analisi completa in italiano fluido e professionale, da pubblicare sull'app Theta.
+    prompt = f"""Sei un analista finanziario senior italiano che scrive direttamente per UN consulente finanziario specifico (l'utente di Theta). Riceverai una notizia in inglese e devi produrre un'analisi completa in italiano professionale.
 
 REGOLE GENERALI
-- Scrivi in italiano corretto, sintassi naturale, lessico finanziario professionale.
-- Sii fattuale: usa SOLO informazioni presenti nel testo originale. Non inventare numeri, date, eventi, o citazioni.
-- Tono: neutro, informativo, mai sensazionalistico.
-- Non dare consigli espliciti di acquisto/vendita.
+- Italiano corretto, lessico finanziario professionale.
+- Sii fattuale: usa SOLO informazioni presenti nel testo originale. Non inventare numeri, date, eventi.
+- Tono neutro e informativo nei primi 3 blocchi (TITOLO, SOMMARIO, IMPATTO).
+- Nella STRATEGIA parla direttamente al consulente al TU ("valuta", "monitora", "considera", "alleggerisci"). Mai usare "i consulenti potrebbero", mai forme impersonali.
+- Non dare consigli espliciti di acquisto/vendita: usa sempre forme condizionali ("se il segnale si conferma...", "per i clienti con profilo X...").
 
 INPUT
 Titolo originale (EN): {title_en}
 Sommario originale (EN): {summary_en or "—"}
 Ticker citati: {tickers_str}
 
-OUTPUT — rispondi ESATTAMENTE in questo formato, con i 4 blocchi etichettati TITOLO, SOMMARIO, IMPATTO, STRATEGIA. Niente preamboli, niente conclusioni:
+OUTPUT — rispondi ESATTAMENTE in questo formato, con i 4 blocchi etichettati, senza preamboli o commenti extra:
 
-TITOLO: <titolo in italiano, max 110 caratteri. Riformulato, non tradotto letterale. Informativo e neutro.>
+TITOLO: <titolo italiano, max 110 caratteri, riformulato non tradotto letterale, informativo e neutro>
 
-SOMMARIO: <riassunto sostanzioso in italiano, 4-6 frasi (600-900 caratteri). Includi: il contesto della notizia, i numeri/dati chiave presenti nell'originale, gli attori coinvolti, il significato per il mercato. Scrivi come un articolo giornalistico breve, non come bullet point. Se l'originale è povero di dettagli, espandi con il contesto settoriale plausibile (es. "il comparto X è sotto pressione per…") ma SENZA inventare fatti specifici.>
+SOMMARIO: <riassunto sostanzioso 4-6 frasi (600-900 caratteri): contesto, dati chiave, attori coinvolti, significato per il mercato. Stile articolo giornalistico breve. Se l'originale è povero, espandi col contesto settoriale plausibile ma senza inventare fatti.>
 
-IMPATTO: <analisi di 3-4 frasi (350-550 caratteri) sull'impatto previsto. Indica: quali settori/asset sono direttamente coinvolti, in che direzione potrebbero muoversi, quali correlazioni di mercato sono rilevanti (es. tassi, dollaro, oro, oil). Concreto e ragionato.>
+IMPATTO: <analisi 3-4 frasi (350-550 caratteri): quali settori/asset coinvolti, in che direzione, quali correlazioni di mercato rilevanti (tassi, dollaro, oro, oil). Concreto.>
 
-STRATEGIA: <suggerimento operativo di 3-4 frasi (350-550 caratteri) per un consulente che gestisce portafogli. Cosa potrebbe fare: monitorare un asset specifico, considerare riallocazione settoriale, valutare hedging, attendere conferme tecniche. Mai categorico ("compra X"), sempre condizionale ("se il segnale si conferma…", "per clienti con profilo Y…"). Cita ticker concreti se rilevanti.>"""
+STRATEGIA: <suggerimento operativo 3-4 frasi (350-550 caratteri) rivolto direttamente al consulente al TU. Esempi di apertura: «Valuta di alleggerire...», «Monitora attentamente...», «Considera di proporre ai tuoi clienti...», «Se vedi questi segnali...». Mai «i consulenti potrebbero». Cita ticker se rilevanti.>"""
 
     try:
         response = client.messages.create(
@@ -127,7 +122,6 @@ STRATEGIA: <suggerimento operativo di 3-4 frasi (350-550 caratteri) per un consu
         )
         text = response.content[0].text.strip()
 
-        # Parsing: cerca i 4 blocchi etichettati
         sections = {"TITOLO": None, "SOMMARIO": None, "IMPATTO": None, "STRATEGIA": None}
         current_key = None
         current_lines = []
@@ -160,7 +154,6 @@ STRATEGIA: <suggerimento operativo di 3-4 frasi (350-550 caratteri) per un consu
 
 
 def upsert_news(supabase, news_items, anthropic_client):
-    """Salva le news nuove e aggiorna quelle esistenti senza analisi italiana completa."""
     new_count, updated_count = 0, 0
 
     for item in news_items:
@@ -168,17 +161,14 @@ def upsert_news(supabase, news_items, anthropic_client):
         if not ext_id:
             continue
 
-        # Cerca se esiste già
         existing = supabase.table("news").select("id, title_it, impact_it").eq("external_id", ext_id).execute()
 
         if existing.data:
             existing_row = existing.data[0]
-            # Salta solo se ha già sia title_it che impact_it (analisi completa)
             if existing_row.get("title_it") and existing_row.get("impact_it"):
                 print(f"  · già analizzata: {(item.get('title') or '')[:60]}…")
                 continue
 
-            # Rigenera analisi completa
             title_it, summary_it, impact_it, strategy_it = generate_full_analysis(
                 anthropic_client, item.get("title"), item.get("summary"), item.get("tickers")
             )
@@ -192,7 +182,6 @@ def upsert_news(supabase, news_items, anthropic_client):
                 updated_count += 1
                 print(f"  ↻ aggiornata: {title_it[:60]}…")
         else:
-            # News nuova: genera analisi e inserisci
             title_it, summary_it, impact_it, strategy_it = generate_full_analysis(
                 anthropic_client, item.get("title"), item.get("summary"), item.get("tickers")
             )
