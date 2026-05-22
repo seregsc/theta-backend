@@ -89,27 +89,28 @@ def parse_news_item(item):
 
 def generate_full_analysis(client, title_en, summary_en, tickers_csv):
     """
-    Genera traduzione italiana COMPLETA: titolo, sommario, impatto, strategia.
-    Questa è l'analisi che apparirà direttamente in Theta.
-    """
-    tickers_str = tickers_csv if tickers_csv else "—"
-    prompt = f"""Sei un analista finanziario professionista italiano. Ricevi una notizia in inglese e devi produrre un'analisi sintetica ma completa, in italiano, adatta a un consulente finanziario che la legge sull'app Theta.
+    prompt = f"""Sei un analista finanziario senior italiano che scrive per consulenti professionisti. Riceverai una notizia in inglese e devi produrre un'analisi completa in italiano fluido e professionale, da pubblicare sull'app Theta.
+
+REGOLE GENERALI
+- Scrivi in italiano corretto, sintassi naturale, lessico finanziario professionale.
+- Sii fattuale: usa SOLO informazioni presenti nel testo originale. Non inventare numeri, date, eventi, o citazioni.
+- Tono: neutro, informativo, mai sensazionalistico.
+- Non dare consigli espliciti di acquisto/vendita.
 
 INPUT
 Titolo originale (EN): {title_en}
 Sommario originale (EN): {summary_en or "—"}
 Ticker citati: {tickers_str}
 
-OUTPUT — rispondi ESATTAMENTE in questo formato, senza preamboli, senza commenti extra:
+OUTPUT — rispondi ESATTAMENTE in questo formato, con i 4 blocchi etichettati TITOLO, SOMMARIO, IMPATTO, STRATEGIA. Niente preamboli, niente conclusioni:
 
-TITOLO: <titolo in italiano, max 110 caratteri, neutro e informativo>
+TITOLO: <titolo in italiano, max 110 caratteri. Riformulato, non tradotto letterale. Informativo e neutro.>
 
-SOMMARIO: <sommario in italiano, 3-5 frasi (400-700 caratteri), che contestualizza la notizia con i fatti chiave: chi, cosa, quando, perché. Sii ancorato al testo originale, non inventare numeri o eventi non presenti.>
+SOMMARIO: <riassunto sostanzioso in italiano, 4-6 frasi (600-900 caratteri). Includi: il contesto della notizia, i numeri/dati chiave presenti nell'originale, gli attori coinvolti, il significato per il mercato. Scrivi come un articolo giornalistico breve, non come bullet point. Se l'originale è povero di dettagli, espandi con il contesto settoriale plausibile (es. "il comparto X è sotto pressione per…") ma SENZA inventare fatti specifici.>
 
-IMPATTO: <analisi in italiano di 2-3 frasi (200-400 caratteri) sull'impatto previsto sui mercati o sui settori coinvolti. Quali asset/settori potrebbero muoversi, in che direzione, e perché. Concreto, basato sui fatti.>
+IMPATTO: <analisi di 3-4 frasi (350-550 caratteri) sull'impatto previsto. Indica: quali settori/asset sono direttamente coinvolti, in che direzione potrebbero muoversi, quali correlazioni di mercato sono rilevanti (es. tassi, dollaro, oro, oil). Concreto e ragionato.>
 
-STRATEGIA: <suggerimento operativo in italiano di 2-3 frasi (200-400 caratteri) su cosa potrebbe fare un consulente: monitorare un certo titolo, riallocare verso un settore, attendere conferme, ridurre rischio, ecc. Tono professionale, mai categorico, mai consiglio di acquisto/vendita diretto.>"""
-    
+STRATEGIA: <suggerimento operativo di 3-4 frasi (350-550 caratteri) per un consulente che gestisce portafogli. Cosa potrebbe fare: monitorare un asset specifico, considerare riallocazione settoriale, valutare hedging, attendere conferme tecniche. Mai categorico ("compra X"), sempre condizionale ("se il segnale si conferma…", "per clienti con profilo Y…"). Cita ticker concreti se rilevanti.>"""
     try:
         response = client.messages.create(
             model=MODEL,
