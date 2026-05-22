@@ -139,7 +139,7 @@ Icone consigliate per tipo di scenario: 🇨🇳 Cina/Asia, 🇺🇸 USA, 🇪�
         return None
 
 
-def cleanup_old_scenarios(supabase, keep_recent_hours=24):
+def cleanup_old_scenarios(supabase, keep_recent_hours=168):
     """Elimina scenari live più vecchi di N ore (così la tabella non cresce indefinitamente)."""
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=keep_recent_hours)).isoformat()
     try:
