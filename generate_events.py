@@ -1,12 +1,10 @@
 """
 Generatore di eventi economici live per il calendario di Theta.
-Chiede a Claude di sintetizzare 4-6 eventi macro/earnings/policy della settimana corrente
+Chiede a Claude di sintetizzare eventi macro/earnings/policy della settimana corrente
 basandosi sul suo training (calendario macro standard) + le news recenti del database.
-Stesso formato degli EVENTS hardcoded nell'app.
 """
 import os
 import json
-import re
 from datetime import datetime, timedelta, timezone
 from supabase import create_client
 from anthropic import Anthropic
@@ -17,7 +15,7 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 MODEL = "claude-sonnet-4-5"
 
 NUM_EVENTS = 15
-KEEP_HOURS = 168  # 7 giorni di archivio
+KEEP_HOURS = 168
 
 
 def fetch_recent_news_context(supabase, limit=15):
@@ -43,53 +41,57 @@ def build_news_context(news_items):
 
 
 def parse_events_response(text):
-    """Estrae il JSON dalla risposta di Claude."""
-    match = re.search(r"```(?:json)?\s*(.+?)\s*```", text, re.DOTALL)
-    if match:
-        json_text = match.group(1).strip()
-    else:
-        match = re.search(r"\[\s*\{.+\}\s*\]", text, re.DOTALL)
-        if match:
-            json_text = match.group(0)
-        else:
-            json_text = text.strip()
+    """Parser JSON robusto: gestisce blocchi markdown e testo extra."""
+    text = text.strip()
+    if text.startswith("```"):
+        first_newline = text.find("\n")
+        if first_newline > 0:
+            text = text[first_newline + 1:]
+        if text.endswith("```"):
+            text = text[:-3].strip()
+        elif "```" in text:
+            text = text[:text.rfind("```")].strip()
+    start = text.find("[")
+    end = text.rfind("]")
+    if start >= 0 and end > start:
+        text = text[start:end + 1]
     try:
-        data = json.loads(json_text)
+        data = json.loads(text)
         if isinstance(data, list):
             return data
         return None
     except json.JSONDecodeError as e:
-        print(f"  ✗ Errore parsing JSON: {e}")
-        print(f"  Risposta (primi 500): {text[:500]}")
+        print(f"  errore parsing JSON: {e}")
+        print(f"  primi 300 char: {text[:300]}")
+        print(f"  ultimi 300 char: {text[-300:]}")
         return None
 
 
 def generate_events(client, news_context):
-    """Chiede a Claude di generare N eventi economici della settimana."""
     today = datetime.now()
     today_str = today.strftime("%d %B %Y, %A")
     week_end = (today + timedelta(days=7)).strftime("%d %B %Y")
 
-    prompt = f"""Sei un analista finanziario senior italiano. Devi compilare il calendario economico per la settimana che inizia oggi ({today_str}) e finisce il {week_end}.
+    prompt = f"""Sei un analista finanziario senior italiano. Compila il calendario economico per la settimana che inizia oggi ({today_str}) e finisce il {week_end}.
 
 Genera {NUM_EVENTS} eventi rilevanti previsti nei prossimi 7 giorni. Usa la tua conoscenza del calendario macro standard:
-- Riunioni banche centrali (Fed FOMC, BCE, BoE, BoJ) — date note
-- Pubblicazione dati macro (CPI USA mensile, NFP primo venerdì del mese, PCE, ISM, ECB rate decisions, dati eurozona)
+- Riunioni banche centrali (Fed FOMC, BCE, BoE, BoJ) con date note
+- Pubblicazione dati macro (CPI USA, NFP primo venerdì del mese, PCE, ISM, dati eurozona, dati Italia)
 - Earnings di grandi società (Magnifici 7, principali europee, italiane FTSE MIB)
-- Eventi geopolitici noti già calendarizzati
+- Eventi geopolitici noti già calendarizzati (summit, vertici, scadenze)
 
 CONTESTO — News recenti dal mercato:
 {news_context}
 
 ISTRUZIONI
-- Eventi REALI e PLAUSIBILI nella settimana indicata, non inventati di sana pianta.
-- Distribuzione: 2-3 eventi macro (banche centrali, dati), 1-2 earnings importanti, eventualmente 1 evento policy/geopolitica.
-- Importanza: usa "HIGH", "MED", "LOW".
+- Eventi REALI e PLAUSIBILI nella settimana indicata.
+- Distribuzione bilanciata: 6-8 eventi macro, 4-5 earnings, 1-2 policy/geopolitica.
+- Importance: "HIGH", "MED", "LOW".
 - Type: "macro", "earnings", "policy", "geopolitica".
 - Italiano professionale.
-- Per i ticker usa solo quelli reali (AAPL, NVDA, MSFT, TSLA, ENI.MI, ecc.).
+- Ticker reali (AAPL, NVDA, MSFT, TSLA, ENI.MI, RHM.DE, ecc.).
 
-OUTPUT — Rispondi ESATTAMENTE in formato JSON, array di {NUM_EVENTS} oggetti, senza preamboli o markdown:
+OUTPUT — rispondi SOLO con JSON puro, senza preamboli, senza markdown, senza ```. Array di {NUM_EVENTS} oggetti esattamente in questo formato:
 
 [
   {{
@@ -101,18 +103,18 @@ OUTPUT — Rispondi ESATTAMENTE in formato JSON, array di {NUM_EVENTS} oggetti, 
     "type_label": "Macro USA",
     "importance": "HIGH",
     "region": "USA",
-    "title": "Titolo evento breve (max 90 caratteri)",
-    "summary": "Descrizione di 3-5 frasi (400-700 caratteri) che spiega cosa è questo evento, perché conta per i mercati, qual è il consensus attuale degli analisti se applicabile.",
-    "baseline_scenario": "Scenario di base in 3-4 frasi (300-500 caratteri): cosa è probabile che succeda, reazione attesa dei mercati (equity, bond, dollaro).",
-    "surprise_scenario": "Scenario di sorpresa in 3-4 frasi (300-500 caratteri): cosa succederebbe se il dato/risultato sorprendesse in positivo o negativo.",
-    "impacted_sectors": ["ai", "bonds", "gold"],
-    "impacted_tickers": ["NVDA", "TLT", "GLD"],
+    "title": "Titolo breve (max 90 caratteri)",
+    "summary": "Descrizione in 3-5 frasi (400-700 caratteri) che spiega cosa è l'evento, perché conta per i mercati, qual è il consensus.",
+    "baseline_scenario": "Scenario base in 3-4 frasi (300-500 caratteri).",
+    "surprise_scenario": "Scenario di sorpresa in 3-4 frasi (300-500 caratteri).",
+    "impacted_sectors": ["ai", "bonds"],
+    "impacted_tickers": ["NVDA", "TLT"],
     "what_to_watch": ["Punto 1", "Punto 2", "Punto 3", "Punto 4"],
-    "preparation": "Suggerimento operativo per il consulente in 3-4 frasi (300-500 caratteri): per quali clienti, quale posizionamento, hedge opzionali."
+    "preparation": "Suggerimento operativo in 3-4 frasi (300-500 caratteri)."
   }}
 ]
 
-Calcola correttamente "days_from_now" rispetto a {today_str} (0 = oggi, 1 = domani, ecc.) e "date_label" formato '26 Mag'."""
+Calcola correttamente days_from_now rispetto a {today_str} (0 = oggi). Date in formato YYYY-MM-DD. date_label tipo "26 Mag"."""
 
     try:
         response = client.messages.create(
@@ -124,7 +126,7 @@ Calcola correttamente "days_from_now" rispetto a {today_str} (0 = oggi, 1 = doma
         events = parse_events_response(text)
         return events
     except Exception as e:
-        print(f"  ✗ errore Claude: {e}")
+        print(f"  errore Claude: {e}")
         return None
 
 
@@ -137,9 +139,9 @@ def cleanup_old_events(supabase, keep_recent_hours=168):
             .execute()
         deleted = len(result.data) if result.data else 0
         if deleted > 0:
-            print(f"  ↺ eliminati {deleted} eventi vecchi (oltre {keep_recent_hours}h)")
+            print(f"  eliminati {deleted} eventi vecchi")
     except Exception as e:
-        print(f"  ⚠ errore cleanup: {e}")
+        print(f"  errore cleanup: {e}")
 
 
 def save_events(supabase, events):
@@ -167,9 +169,9 @@ def save_events(supabase, events):
         try:
             supabase.table("events_live").insert(row).execute()
             saved += 1
-            print(f"  ✓ salvato: {e.get('title', '?')[:60]}")
+            print(f"  ok: {e.get('title', '?')[:60]}")
         except Exception as exc:
-            print(f"  ✗ errore salvataggio: {exc}")
+            print(f"  errore salvataggio: {exc}")
     return saved
 
 
@@ -198,7 +200,7 @@ def main():
     print("4. Salvataggio nel database...")
     saved = save_events(supabase, events)
 
-    print(f"\n✓ Fatto: {saved}/{len(events)} eventi salvati.")
+    print(f"\nFatto: {saved}/{len(events)} eventi salvati.")
 
 
 if __name__ == "__main__":
