@@ -1,4 +1,5 @@
 import os
+import re
 from supabase import create_client
 from anthropic import Anthropic
 
@@ -8,26 +9,56 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 MODEL = "claude-sonnet-4-5"
 
 
+def parse_sections(text):
+    """
+    Parser tollerante per estrarre TITOLO, SOMMARIO, IMPATTO, STRATEGIA.
+    Accetta varianti: TITOLO:, **TITOLO:**, ## TITOLO, Titolo:, ecc.
+    """
+    keys = ["TITOLO", "SOMMARIO", "IMPATTO", "STRATEGIA"]
+    sections = {k: None for k in keys}
+
+    # Regex che cerca ogni etichetta con varie possibili decorazioni markdown
+    # Es: **TITOLO:**, ## TITOLO:, TITOLO -, Titolo:
+    pattern = r"(?:^|\n)\s*(?:#+\s*)?(?:\*\*)?(TITOLO|SOMMARIO|IMPATTO|STRATEGIA)(?:\*\*)?\s*[:\-—]\s*"
+    matches = list(re.finditer(pattern, text, re.IGNORECASE))
+
+    if not matches:
+        return sections
+
+    for i, m in enumerate(matches):
+        key = m.group(1).upper()
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        content = text[start:end].strip()
+        # Pulisci asterischi/cancelletti residui all'inizio/fine
+        content = re.sub(r"^[*#\s]+", "", content)
+        content = re.sub(r"[*#\s]+$", "", content)
+        sections[key] = content if content else None
+
+    return sections
+
+
 def generate_full_analysis(client, title_en, summary_en, tickers_csv):
     tickers_str = tickers_csv if tickers_csv else "—"
     prompt = f"""Sei un analista finanziario senior italiano che scrive per consulenti professionisti. Riceverai una notizia in inglese e devi produrre un'analisi completa in italiano fluido e professionale.
 
 REGOLE
-- Scrivi in italiano corretto, lessico finanziario professionale.
+- Italiano corretto, lessico finanziario professionale.
 - Usa SOLO informazioni presenti nel testo originale. Non inventare numeri, date, eventi.
-- Tono: neutro, informativo, mai sensazionalistico.
+- Tono neutro, informativo, mai sensazionalistico.
 - Non dare consigli espliciti di acquisto/vendita.
+- NON usare markdown (no asterischi, no cancelletti, no grassetto). Solo testo semplice.
 
 INPUT
 Titolo originale (EN): {title_en}
 Sommario originale (EN): {summary_en or "—"}
 Ticker citati: {tickers_str}
 
-OUTPUT — formato esatto, 4 blocchi etichettati:
+OUTPUT — rispondi ESATTAMENTE in questo formato con 4 blocchi etichettati, senza altro testo prima o dopo:
 
 TITOLO: <titolo italiano, max 110 caratteri, riformulato non tradotto letterale>
 
-SOMMARIO: <riassunto in italiano, 4-6 frasi (600-900 caratteri). Contesto, dati chiave, attori, significato per il mercato. Stile articolo giornalistico breve. Se l'originale è povero, espandi con contesto settoriale plausibile ma SENZA inventare fatti specifici.>
+SOMMARIO: <riassunto 4-6 frasi (600-900 caratteri). Contesto, dati chiave, attori, significato per il mercato. Stile articolo giornalistico. Se l'originale è povero, espandi con contesto settoriale plausibile ma senza inventare fatti specifici.>
 
 IMPATTO: <analisi 3-4 frasi (350-550 caratteri) sull'impatto previsto. Quali settori/asset coinvolti, in che direzione, quali correlazioni di mercato. Concreto.>
 
@@ -36,38 +67,21 @@ STRATEGIA: <suggerimento operativo 3-4 frasi (350-550 caratteri) per un consulen
     try:
         response = client.messages.create(
             model=MODEL,
-            max_tokens=1200,
+            max_tokens=1500,
             messages=[{"role": "user", "content": prompt}],
         )
         text = response.content[0].text.strip()
-        sections = {"TITOLO": None, "SOMMARIO": None, "IMPATTO": None, "STRATEGIA": None}
-        current_key = None
-        current_lines = []
-        for line in text.split("\n"):
-            line = line.strip()
-            if not line:
-                if current_key and current_lines:
-                    sections[current_key] = " ".join(current_lines).strip()
-                    current_lines = []
-                continue
-            matched_header = False
-            for key in sections.keys():
-                if line.startswith(f"{key}:"):
-                    if current_key and current_lines:
-                        sections[current_key] = " ".join(current_lines).strip()
-                    current_key = key
-                    rest = line[len(key) + 1:].strip()
-                    current_lines = [rest] if rest else []
-                    matched_header = True
-                    break
-            if not matched_header and current_key:
-                current_lines.append(line)
-        if current_key and current_lines:
-            sections[current_key] = " ".join(current_lines).strip()
-        return sections["TITOLO"], sections["SOMMARIO"], sections["IMPATTO"], sections["STRATEGIA"]
+        sections = parse_sections(text)
+        return (
+            sections.get("TITOLO"),
+            sections.get("SOMMARIO"),
+            sections.get("IMPATTO"),
+            sections.get("STRATEGIA"),
+            text,  # restituisce anche il testo grezzo per debug
+        )
     except Exception as e:
         print(f"  errore Claude: {e}")
-        return None, None, None, None
+        return None, None, None, None, None
 
 
 def main():
@@ -80,25 +94,30 @@ def main():
 
     all_rows = result.data or []
     rows = [r for r in all_rows if not r.get("impact_it") or not r.get("strategy_it")]
-    print(f"Database: {len(all_rows)} news totali, {len(rows)} senza analisi completa.")
+    print(f"Database: {len(all_rows)} news totali, {len(rows)} senza analisi completa.\n")
 
     if not rows:
-        print("Tutte le news sono gia state analizzate. Nulla da fare.")
+        print("Tutte le news sono gia state analizzate.")
         return
 
     updated = 0
+    failed = 0
     for i, row in enumerate(rows, 1):
         title_en = row.get("title")
         summary_en = row.get("summary")
         tickers = row.get("tickers")
         print(f"[{i}/{len(rows)}] {(title_en or '')[:60]}")
 
-        title_it, summary_it, impact_it, strategy_it = generate_full_analysis(
+        title_it, summary_it, impact_it, strategy_it, raw_text = generate_full_analysis(
             client, title_en, summary_en, tickers
         )
 
-        if not title_it:
-            print(f"  saltata: parsing fallito")
+        # Se anche solo IMPATTO o STRATEGIA mancano, considera fallita
+        if not impact_it or not strategy_it:
+            failed += 1
+            print(f"  parsing parziale (TITOLO={bool(title_it)}, SOMM={bool(summary_it)}, IMP={bool(impact_it)}, STR={bool(strategy_it)})")
+            if raw_text:
+                print(f"  Prime 200 lettere risposta Claude: {raw_text[:200]}")
             continue
 
         try:
@@ -113,7 +132,7 @@ def main():
         except Exception as e:
             print(f"  errore update: {e}")
 
-    print(f"\nFatto: {updated}/{len(rows)} news aggiornate.")
+    print(f"\nFatto: {updated}/{len(rows)} aggiornate, {failed} fallite.")
 
 
 if __name__ == "__main__":
