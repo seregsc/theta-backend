@@ -1,17 +1,18 @@
 import os
 import requests
 from supabase import create_client
+from anthropic import Anthropic
 
 MARKETAUX_KEY = os.environ.get("MARKETAUX_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 
-# Stessi ticker del fetch prezzi
+MODEL = "claude-sonnet-4-5"
 TICKERS = ["AAPL", "MSFT", "NVDA", "TSLA", "GOOGL", "META", "AMZN", "SPY"]
 
 
 def fetch_news_for_tickers(tickers):
-    """Scarica le news più recenti per la lista di ticker."""
     url = "https://api.marketaux.com/v1/news/all"
     params = {
         "symbols": ",".join(tickers),
@@ -20,31 +21,23 @@ def fetch_news_for_tickers(tickers):
         "limit": 3,
         "api_token": MARKETAUX_KEY,
     }
-    
     try:
         response = requests.get(url, params=params, timeout=15)
         data = response.json()
     except Exception as e:
         print(f"Errore di rete: {e}")
         return []
-    
     if "data" not in data:
         print(f"Risposta API inattesa: {data}")
         return []
-    
     return data["data"]
 
 
 def parse_news_item(item):
-    """Estrae i campi che ci interessano da una news MarketAux."""
-    # Estrai ticker citati nella news
     entities = item.get("entities", [])
     tickers = [e.get("symbol") for e in entities if e.get("symbol")]
-    
-    # Sentiment medio (MarketAux dà uno score per entità)
     sentiments = [e.get("sentiment_score") for e in entities if e.get("sentiment_score") is not None]
     avg_sentiment = sum(sentiments) / len(sentiments) if sentiments else None
-    
     return {
         "external_id": item.get("uuid"),
         "title": item.get("title"),
@@ -57,19 +50,61 @@ def parse_news_item(item):
     }
 
 
-def save_news(supabase, news_items):
-    """Salva le news evitando duplicati grazie a external_id UNIQUE."""
+def translate_to_italian(client, title_en, summary_en):
+    """Chiede a Claude di tradurre+sintetizzare in italiano professionale."""
+    prompt = f"""Traduci la seguente notizia finanziaria in italiano professionale, conciso e adatto a un consulente finanziario.
+
+Titolo originale (EN): {title_en}
+Sommario originale (EN): {summary_en or "—"}
+
+Rispondi ESATTAMENTE in questo formato, senza preamboli, senza aggiungere altro:
+
+TITOLO: <titolo italiano, max 100 caratteri, neutro e informativo>
+SOMMARIO: <sommario italiano in 1-2 frasi, max 250 caratteri, sintetico>"""
+    
+    try:
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=300,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = response.content[0].text.strip()
+        
+        # Parsing semplice
+        title_it, summary_it = None, None
+        for line in text.split("\n"):
+            line = line.strip()
+            if line.startswith("TITOLO:"):
+                title_it = line.replace("TITOLO:", "").strip()
+            elif line.startswith("SOMMARIO:"):
+                summary_it = line.replace("SOMMARIO:", "").strip()
+        return title_it, summary_it
+    except Exception as e:
+        print(f"  ✗ errore traduzione: {e}")
+        return None, None
+
+
+def save_news(supabase, news_items, client):
     saved = 0
     for item in news_items:
         if not item.get("external_id"):
             continue
+        
+        # Traduci in italiano prima di salvare
+        title_it, summary_it = translate_to_italian(
+            client, item.get("title"), item.get("summary")
+        )
+        item["title_it"] = title_it
+        item["summary_it"] = summary_it
+        
         try:
             supabase.table("news").insert(item).execute()
             saved += 1
+            preview = (title_it or item.get("title") or "")[:70]
+            print(f"  ✓ {preview}…")
         except Exception as e:
-            # Se è un duplicato (external_id già esistente), ignora
             if "duplicate" in str(e).lower() or "23505" in str(e):
-                pass
+                pass  # duplicato, ignora silenziosamente
             else:
                 print(f"  ✗ errore salvataggio: {e}")
     return saved
@@ -84,17 +119,11 @@ def main():
         return
     
     items = [parse_news_item(n) for n in news_raw]
-    
-    # Stampa anteprima
-    for i, item in enumerate(items, 1):
-        title = (item["title"] or "")[:80]
-        sent = item["sentiment"]
-        sent_str = f" sent={sent:+.2f}" if sent is not None else ""
-        tickers_str = item["tickers"] or "—"
-        print(f"  [{i}] {tickers_str}{sent_str}: {title}…")
-    
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-    saved = save_news(supabase, items)
+    client = Anthropic(api_key=ANTHROPIC_API_KEY)
+    
+    print("Traduzione e salvataggio...")
+    saved = save_news(supabase, items, client)
     print(f"\n✓ Salvate {saved} news nuove ({len(items) - saved} duplicate ignorate).")
 
 
