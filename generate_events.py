@@ -1,11 +1,12 @@
 """
 Generatore di eventi economici live per Theta.
-FONTE DATI: Forex Factory JSON settimanale (gratuito, dati ufficiali).
-URL: https://nfs.faireconomy.media/ff_calendar_thisweek.json
+FONTI DATI: Forex Factory JSON settimana corrente + settimana successiva (gratuito).
+- ff_calendar_thisweek.json
+- ff_calendar_nextweek.json
 
 Per ogni evento di alta rilevanza:
 - Dati strutturati (data, ora, paese, impatto, valori): da Forex Factory
-- Analisi italiana (summary, baseline, surprise, what to watch, preparation): generata da Claude Sonnet
+- Analisi italiana (summary, baseline, surprise, what to watch, preparation): generata da Claude Haiku
 """
 import os
 import json
@@ -18,16 +19,19 @@ from anthropic import Anthropic
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-MODEL = "claude-sonnet-4-5"
+MODEL = "claude-haiku-4-5-20251001"
 
-FOREX_FACTORY_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+FOREX_FACTORY_URLS = [
+    "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
+    "https://nfs.faireconomy.media/ff_calendar_nextweek.json",
+]
 KEEP_HOURS = 240  # 10 giorni di archivio
 
 # Filtriamo solo paesi rilevanti per consulenti italiani
 RELEVANT_COUNTRIES = {"USD", "EUR", "GBP", "CNY", "JPY", "CHF", "CAD"}
 
-# Massimo eventi da generare per evitare costi eccessivi
-MAX_EVENTS = 30
+# Massimo eventi da elaborare per evitare costi eccessivi
+MAX_EVENTS = 40
 
 # Fuso orario italiano (gestisce automaticamente ora legale/solare)
 ROME_TZ = ZoneInfo("Europe/Rome")
@@ -47,17 +51,26 @@ COUNTRY_MAP = {
 
 
 def fetch_forex_factory_events():
-    """Scarica il JSON settimanale di Forex Factory."""
-    try:
-        headers = {"User-Agent": "Mozilla/5.0 (Theta backend)"}
-        r = requests.get(FOREX_FACTORY_URL, headers=headers, timeout=30)
-        r.raise_for_status()
-        data = r.json()
-        print(f"Forex Factory: ricevuti {len(data)} eventi totali")
-        return data
-    except Exception as e:
-        print(f"Errore Forex Factory: {e}")
-        return []
+    """Scarica i JSON delle settimane corrente + successiva, deduplicandoli."""
+    all_events = []
+    seen_keys = set()
+    for url in FOREX_FACTORY_URLS:
+        try:
+            headers = {"User-Agent": "Mozilla/5.0 (Theta backend)"}
+            r = requests.get(url, headers=headers, timeout=30)
+            r.raise_for_status()
+            data = r.json()
+            print(f"  {url.split('/')[-1]}: {len(data)} eventi")
+            for e in data:
+                # Dedup chiave: title + date
+                key = (e.get("title", ""), e.get("date", ""))
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    all_events.append(e)
+        except Exception as e:
+            print(f"  errore {url}: {e}")
+    print(f"Forex Factory: {len(all_events)} eventi totali (dopo dedup)")
+    return all_events
 
 
 def filter_relevant_events(events):
@@ -95,7 +108,7 @@ def normalize_event(e):
         date_label = f"{dt_rome.day} {MONTHS_IT[dt_rome.month - 1]}"
         event_time = dt_rome.strftime("%H:%M CET")
 
-        # days_from_now calcolato in fuso Roma (oggi a Roma vs giorno evento a Roma)
+        # days_from_now calcolato in fuso Roma
         now_rome = datetime.now(ROME_TZ)
         days_from_now = (dt_rome.date() - now_rome.date()).days
     except Exception as ex:
@@ -246,7 +259,7 @@ def main():
     print("1. Cleanup eventi vecchi (oltre 10 giorni)...")
     cleanup_old_events(supabase, keep_recent_hours=KEEP_HOURS)
 
-    print("2. Scarico calendario da Forex Factory...")
+    print("2. Scarico calendario da Forex Factory (settimana corrente + successiva)...")
     raw_events = fetch_forex_factory_events()
     if not raw_events:
         print("Nessun dato. Esco.")
@@ -265,10 +278,11 @@ def main():
             normalized.append(n)
     print(f"Eventi normalizzati: {len(normalized)}")
 
-    # Filtra solo eventi futuri o di oggi (no eventi del passato)
+    # Includi anche eventi degli ultimi 2 giorni (per coprire weekend / inizio settimana)
     today_rome = datetime.now(ROME_TZ).date()
-    upcoming = [n for n in normalized if n.get("event_date") and n["event_date"] >= today_rome.isoformat()]
-    print(f"Eventi futuri (da oggi {today_rome}): {len(upcoming)}")
+    cutoff_date = (today_rome - timedelta(days=2)).isoformat()
+    upcoming = [n for n in normalized if n.get("event_date") and n["event_date"] >= cutoff_date]
+    print(f"Eventi inclusi (da {cutoff_date}): {len(upcoming)}")
 
     # Ordina per data crescente
     upcoming.sort(key=lambda x: (x.get("event_date", ""), x.get("event_time", "")))
@@ -277,7 +291,7 @@ def main():
     upcoming = upcoming[:MAX_EVENTS]
     print(f"Elaboro {len(upcoming)} eventi (massimo {MAX_EVENTS}).\n")
 
-    print(f"3. Genero analisi italiana e salvo (uno per volta)...")
+    print(f"3. Genero analisi italiana e salvo (uno per volta, Claude Haiku)...")
     saved = 0
     skipped = 0
     failed = 0
