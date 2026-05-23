@@ -12,11 +12,15 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 MODEL = "claude-haiku-4-5-20251001"
 TICKERS = ["AAPL", "MSFT", "NVDA", "TSLA", "GOOGL", "META", "AMZN", "SPY"]
 
+# Quante news massime salvare per ogni esecuzione
+MAX_NEWS_PER_RUN = 1
+
 CATEGORIES = ["azioni", "macroeconomia", "geopolitica", "materie_prime", "generica"]
 
 
 def fetch_news_for_tickers(tickers):
-    published_after = (datetime.now(timezone.utc) - timedelta(hours=12)).strftime("%Y-%m-%dT%H:%M:%S")
+    # Ampliamo finestra a 24h per avere più candidate da cui scegliere la migliore
+    published_after = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%S")
     all_news = []
     url = "https://api.marketaux.com/v1/news/all"
 
@@ -24,7 +28,7 @@ def fetch_news_for_tickers(tickers):
         "industries": "Finance,Technology,Energy,Healthcare",
         "filter_entities": "true",
         "language": "en",
-        "limit": 3,
+        "limit": 5,
         "published_after": published_after,
         "api_token": MARKETAUX_KEY,
     }
@@ -43,7 +47,7 @@ def fetch_news_for_tickers(tickers):
         "symbols": ",".join(tickers),
         "filter_entities": "true",
         "language": "en",
-        "limit": 3,
+        "limit": 5,
         "published_after": published_after,
         "api_token": MARKETAUX_KEY,
     }
@@ -58,6 +62,7 @@ def fetch_news_for_tickers(tickers):
     except Exception as e:
         print(f"  Errore ticker news: {e}")
 
+    # Dedup per uuid
     seen = set()
     unique = []
     for n in all_news:
@@ -164,57 +169,44 @@ STRATEGIA: <suggerimento operativo 3-4 frasi (350-550 caratteri) al TU al consul
         return None, None, None, None, None
 
 
-def upsert_news(supabase, news_items, anthropic_client):
-    new_count, updated_count = 0, 0
+def upsert_news(supabase, news_items, anthropic_client, max_to_save):
+    new_count = 0
 
+    # Filtro: solo news non gia in db
+    fresh_items = []
     for item in news_items:
         ext_id = item.get("external_id")
         if not ext_id:
             continue
+        existing = supabase.table("news").select("id").eq("external_id", ext_id).execute()
+        if not existing.data:
+            fresh_items.append(item)
 
-        existing = supabase.table("news").select("id, title_it, impact_it, category").eq("external_id", ext_id).execute()
+    print(f"  News nuove (non in db): {len(fresh_items)}")
 
-        if existing.data:
-            existing_row = existing.data[0]
-            if existing_row.get("title_it") and existing_row.get("impact_it") and existing_row.get("category"):
-                print(f"  · già analizzata: {(item.get('title') or '')[:60]}…")
-                continue
+    # Salva solo le prime N
+    for item in fresh_items[:max_to_save]:
+        cat, title_it, summary_it, impact_it, strategy_it = generate_full_analysis(
+            anthropic_client, item.get("title"), item.get("summary"), item.get("tickers")
+        )
+        item["category"] = cat
+        item["title_it"] = title_it
+        item["summary_it"] = summary_it
+        item["impact_it"] = impact_it
+        item["strategy_it"] = strategy_it
+        try:
+            supabase.table("news").insert(item).execute()
+            new_count += 1
+            preview = (title_it or item.get("title") or "")[:60]
+            print(f"  nuova [{cat}]: {preview}…")
+        except Exception as e:
+            print(f"  errore salvataggio: {e}")
 
-            cat, title_it, summary_it, impact_it, strategy_it = generate_full_analysis(
-                anthropic_client, item.get("title"), item.get("summary"), item.get("tickers")
-            )
-            if title_it:
-                supabase.table("news").update({
-                    "category": cat,
-                    "title_it": title_it,
-                    "summary_it": summary_it,
-                    "impact_it": impact_it,
-                    "strategy_it": strategy_it,
-                }).eq("id", existing_row["id"]).execute()
-                updated_count += 1
-                print(f"  aggiornata [{cat}]: {title_it[:60]}…")
-        else:
-            cat, title_it, summary_it, impact_it, strategy_it = generate_full_analysis(
-                anthropic_client, item.get("title"), item.get("summary"), item.get("tickers")
-            )
-            item["category"] = cat
-            item["title_it"] = title_it
-            item["summary_it"] = summary_it
-            item["impact_it"] = impact_it
-            item["strategy_it"] = strategy_it
-            try:
-                supabase.table("news").insert(item).execute()
-                new_count += 1
-                preview = (title_it or item.get("title") or "")[:60]
-                print(f"  nuova [{cat}]: {preview}…")
-            except Exception as e:
-                print(f"  errore salvataggio: {e}")
-
-    return new_count, updated_count
+    return new_count
 
 
 def main():
-    print(f"Scarico news per {len(TICKERS)} ticker (ultime 12 ore)...")
+    print(f"Scarico news per {len(TICKERS)} ticker (ultime 24 ore, max {MAX_NEWS_PER_RUN} da salvare)...")
     news_raw = fetch_news_for_tickers(TICKERS)
     print(f"Ricevute {len(news_raw)} news da MarketAux.\n")
 
@@ -225,9 +217,9 @@ def main():
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
     anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
-    print("Analisi completa AI + categoria (Claude Haiku)...")
-    new_count, updated_count = upsert_news(supabase, items, anthropic_client)
-    print(f"\nFatto: {new_count} news nuove, {updated_count} aggiornate.")
+    print(f"Analisi AI per max {MAX_NEWS_PER_RUN} news (Claude Haiku)...")
+    new_count = upsert_news(supabase, items, anthropic_client, MAX_NEWS_PER_RUN)
+    print(f"\nFatto: {new_count} news nuove salvate.")
 
 
 if __name__ == "__main__":
