@@ -1,4 +1,3 @@
-
 import os
 import requests
 from datetime import datetime, timedelta, timezone
@@ -10,12 +9,13 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 
-MODEL = "claude-sonnet-4-5"
+MODEL = "claude-haiku-4-5-20251001"
 TICKERS = ["AAPL", "MSFT", "NVDA", "TSLA", "GOOGL", "META", "AMZN", "SPY"]
+
+CATEGORIES = ["azioni", "macroeconomia", "geopolitica", "materie_prime", "generica"]
 
 
 def fetch_news_for_tickers(tickers):
-    """Scarica news generiche + ticker-specific da MarketAux."""
     published_after = (datetime.now(timezone.utc) - timedelta(hours=12)).strftime("%Y-%m-%dT%H:%M:%S")
     all_news = []
     url = "https://api.marketaux.com/v1/news/all"
@@ -70,7 +70,6 @@ def fetch_news_for_tickers(tickers):
 
 
 def parse_news_item(item):
-    """Converte una news MarketAux nel formato del database."""
     entities = item.get("entities", [])
     tickers = [e.get("symbol") for e in entities if e.get("symbol")]
     sentiments = [e.get("sentiment_score") for e in entities if e.get("sentiment_score") is not None]
@@ -88,41 +87,49 @@ def parse_news_item(item):
 
 
 def generate_full_analysis(client, title_en, summary_en, tickers_csv):
-    """Genera TITOLO, SOMMARIO, IMPATTO, STRATEGIA in italiano via Claude."""
     tickers_str = tickers_csv if tickers_csv else "—"
-    prompt = f"""Sei un analista finanziario senior italiano che scrive direttamente per UN consulente finanziario specifico (l'utente di Theta). Riceverai una notizia in inglese e devi produrre un'analisi completa in italiano professionale.
+    prompt = f"""Sei un analista finanziario senior italiano che scrive direttamente per UN consulente finanziario specifico (l'utente di Theta). Riceverai una notizia in inglese e devi produrre un'analisi completa in italiano professionale + classificare la categoria.
 
 REGOLE GENERALI
 - Italiano corretto, lessico finanziario professionale.
 - Sii fattuale: usa SOLO informazioni presenti nel testo originale. Non inventare numeri, date, eventi.
-- Tono neutro e informativo nei primi 3 blocchi (TITOLO, SOMMARIO, IMPATTO).
-- Nella STRATEGIA parla direttamente al consulente al TU ("valuta", "monitora", "considera", "alleggerisci"). Mai usare "i consulenti potrebbero", mai forme impersonali.
-- Non dare consigli espliciti di acquisto/vendita: usa sempre forme condizionali ("se il segnale si conferma...", "per i clienti con profilo X...").
+- Tono neutro nei primi 3 blocchi (TITOLO, SOMMARIO, IMPATTO).
+- Nella STRATEGIA parla direttamente al consulente al TU («valuta», «monitora», «considera», «alleggerisci»). Mai «i consulenti potrebbero».
+- Forme condizionali per i consigli («se il segnale si conferma...», «per clienti con profilo X...»).
+
+CATEGORIE — Scegline UNA tra:
+- azioni: notizie su singole società quotate, earnings, M&A, IPO, partnership aziendali
+- macroeconomia: dati economici (PIL, inflazione, occupazione), banche centrali, tassi
+- geopolitica: guerre, conflitti, sanzioni, tensioni internazionali, elezioni, politica estera
+- materie_prime: petrolio, gas, oro, metalli, agricoltura, energia
+- generica: altro (regolamentazione finanziaria, tecnologia generica, varie)
 
 INPUT
 Titolo originale (EN): {title_en}
 Sommario originale (EN): {summary_en or "—"}
 Ticker citati: {tickers_str}
 
-OUTPUT — rispondi ESATTAMENTE in questo formato, con i 4 blocchi etichettati, senza preamboli o commenti extra:
+OUTPUT — rispondi ESATTAMENTE in questo formato, con i 5 blocchi etichettati, senza preamboli:
 
-TITOLO: <titolo italiano, max 110 caratteri, riformulato non tradotto letterale, informativo e neutro>
+CATEGORIA: <una sola tra: azioni, macroeconomia, geopolitica, materie_prime, generica>
 
-SOMMARIO: <riassunto sostanzioso 4-6 frasi (600-900 caratteri): contesto, dati chiave, attori coinvolti, significato per il mercato. Stile articolo giornalistico breve. Se l'originale è povero, espandi col contesto settoriale plausibile ma senza inventare fatti.>
+TITOLO: <titolo italiano, max 110 caratteri, riformulato non tradotto letterale>
 
-IMPATTO: <analisi 3-4 frasi (350-550 caratteri): quali settori/asset coinvolti, in che direzione, quali correlazioni di mercato rilevanti (tassi, dollaro, oro, oil). Concreto.>
+SOMMARIO: <riassunto 4-6 frasi (600-900 caratteri): contesto, dati chiave, attori, significato per il mercato. Stile giornalistico breve.>
 
-STRATEGIA: <suggerimento operativo 3-4 frasi (350-550 caratteri) rivolto direttamente al consulente al TU. Esempi di apertura: «Valuta di alleggerire...», «Monitora attentamente...», «Considera di proporre ai tuoi clienti...», «Se vedi questi segnali...». Mai «i consulenti potrebbero». Cita ticker se rilevanti.>"""
+IMPATTO: <analisi 3-4 frasi (350-550 caratteri): settori/asset coinvolti, direzione, correlazioni.>
+
+STRATEGIA: <suggerimento operativo 3-4 frasi (350-550 caratteri) al TU al consulente. Cita ticker se rilevanti.>"""
 
     try:
         response = client.messages.create(
             model=MODEL,
-            max_tokens=1200,
+            max_tokens=1500,
             messages=[{"role": "user", "content": prompt}],
         )
         text = response.content[0].text.strip()
 
-        sections = {"TITOLO": None, "SOMMARIO": None, "IMPATTO": None, "STRATEGIA": None}
+        sections = {"CATEGORIA": None, "TITOLO": None, "SOMMARIO": None, "IMPATTO": None, "STRATEGIA": None}
         current_key = None
         current_lines = []
         for line in text.split("\n"):
@@ -147,10 +154,14 @@ STRATEGIA: <suggerimento operativo 3-4 frasi (350-550 caratteri) rivolto diretta
         if current_key and current_lines:
             sections[current_key] = " ".join(current_lines).strip()
 
-        return sections["TITOLO"], sections["SOMMARIO"], sections["IMPATTO"], sections["STRATEGIA"]
+        cat = (sections["CATEGORIA"] or "generica").lower().strip()
+        if cat not in CATEGORIES:
+            cat = "generica"
+
+        return cat, sections["TITOLO"], sections["SOMMARIO"], sections["IMPATTO"], sections["STRATEGIA"]
     except Exception as e:
-        print(f"  ✗ errore analisi: {e}")
-        return None, None, None, None
+        print(f"  errore analisi: {e}")
+        return None, None, None, None, None
 
 
 def upsert_news(supabase, news_items, anthropic_client):
@@ -161,30 +172,32 @@ def upsert_news(supabase, news_items, anthropic_client):
         if not ext_id:
             continue
 
-        existing = supabase.table("news").select("id, title_it, impact_it").eq("external_id", ext_id).execute()
+        existing = supabase.table("news").select("id, title_it, impact_it, category").eq("external_id", ext_id).execute()
 
         if existing.data:
             existing_row = existing.data[0]
-            if existing_row.get("title_it") and existing_row.get("impact_it"):
+            if existing_row.get("title_it") and existing_row.get("impact_it") and existing_row.get("category"):
                 print(f"  · già analizzata: {(item.get('title') or '')[:60]}…")
                 continue
 
-            title_it, summary_it, impact_it, strategy_it = generate_full_analysis(
+            cat, title_it, summary_it, impact_it, strategy_it = generate_full_analysis(
                 anthropic_client, item.get("title"), item.get("summary"), item.get("tickers")
             )
             if title_it:
                 supabase.table("news").update({
+                    "category": cat,
                     "title_it": title_it,
                     "summary_it": summary_it,
                     "impact_it": impact_it,
                     "strategy_it": strategy_it,
                 }).eq("id", existing_row["id"]).execute()
                 updated_count += 1
-                print(f"  ↻ aggiornata: {title_it[:60]}…")
+                print(f"  aggiornata [{cat}]: {title_it[:60]}…")
         else:
-            title_it, summary_it, impact_it, strategy_it = generate_full_analysis(
+            cat, title_it, summary_it, impact_it, strategy_it = generate_full_analysis(
                 anthropic_client, item.get("title"), item.get("summary"), item.get("tickers")
             )
+            item["category"] = cat
             item["title_it"] = title_it
             item["summary_it"] = summary_it
             item["impact_it"] = impact_it
@@ -193,9 +206,9 @@ def upsert_news(supabase, news_items, anthropic_client):
                 supabase.table("news").insert(item).execute()
                 new_count += 1
                 preview = (title_it or item.get("title") or "")[:60]
-                print(f"  ✓ nuova: {preview}…")
+                print(f"  nuova [{cat}]: {preview}…")
             except Exception as e:
-                print(f"  ✗ errore salvataggio: {e}")
+                print(f"  errore salvataggio: {e}")
 
     return new_count, updated_count
 
@@ -212,9 +225,9 @@ def main():
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
     anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
-    print("Analisi completa AI e salvataggio...")
+    print("Analisi completa AI + categoria (Claude Haiku)...")
     new_count, updated_count = upsert_news(supabase, items, anthropic_client)
-    print(f"\n✓ {new_count} news nuove, {updated_count} aggiornate con analisi italiana.")
+    print(f"\nFatto: {new_count} news nuove, {updated_count} aggiornate.")
 
 
 if __name__ == "__main__":
