@@ -1,8 +1,7 @@
-
 """
 Backfill news analysis.
-Riprocessa SOLO le news che hanno analisi mancante o incompleta.
-Pensato per girare in automatico ogni poche ore senza sprecare credit Claude.
+Riprocessa SOLO le news con analisi/categoria mancante.
+Usa Haiku per risparmio.
 """
 import os
 import re
@@ -12,13 +11,15 @@ from anthropic import Anthropic
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-MODEL = "claude-sonnet-4-5"
+MODEL = "claude-haiku-4-5-20251001"
+
+CATEGORIES = ["azioni", "macroeconomia", "geopolitica", "materie_prime", "generica"]
 
 
 def parse_sections(text):
-    keys = ["TITOLO", "SOMMARIO", "IMPATTO", "STRATEGIA"]
+    keys = ["CATEGORIA", "TITOLO", "SOMMARIO", "IMPATTO", "STRATEGIA"]
     sections = {k: None for k in keys}
-    pattern = r"(?:^|\n)\s*(?:#+\s*)?(?:\*\*)?(TITOLO|SOMMARIO|IMPATTO|STRATEGIA)(?:\*\*)?\s*[:\-—]\s*"
+    pattern = r"(?:^|\n)\s*(?:#+\s*)?(?:\*\*)?(CATEGORIA|TITOLO|SOMMARIO|IMPATTO|STRATEGIA)(?:\*\*)?\s*[:\-—]\s*"
     matches = list(re.finditer(pattern, text, re.IGNORECASE))
     if not matches:
         return sections
@@ -35,30 +36,38 @@ def parse_sections(text):
 
 def generate_full_analysis(client, title_en, summary_en, tickers_csv):
     tickers_str = tickers_csv if tickers_csv else "—"
-    prompt = f"""Sei un analista finanziario senior italiano che scrive direttamente per UN consulente finanziario specifico (l'utente di Theta). Riceverai una notizia in inglese e devi produrre un'analisi completa in italiano professionale.
+    prompt = f"""Sei un analista finanziario senior italiano che scrive per UN consulente specifico (l'utente di Theta). Devi tradurre + arricchire + classificare la notizia.
 
-REGOLE GENERALI
-- Italiano corretto, lessico finanziario professionale.
-- Usa SOLO informazioni presenti nel testo originale. Non inventare numeri, date, eventi.
-- Tono neutro e informativo nei primi 3 blocchi (TITOLO, SOMMARIO, IMPATTO).
-- Nella STRATEGIA parla direttamente al consulente al TU («valuta», «monitora», «considera», «alleggerisci»). Mai usare «i consulenti potrebbero», mai forme impersonali.
-- Non dare consigli espliciti di acquisto/vendita: usa sempre forme condizionali («se il segnale si conferma...», «per i clienti con profilo X...»).
-- NON usare markdown (no asterischi, no cancelletti, no grassetto). Solo testo semplice.
+REGOLE
+- Italiano professionale, lessico finanziario.
+- Solo informazioni dal testo originale. Niente invenzioni.
+- Tono neutro nei primi blocchi.
+- Nella STRATEGIA al TU al consulente («valuta», «monitora»). Mai «i consulenti potrebbero».
+- NON usare markdown.
+
+CATEGORIE (sceglierne UNA):
+- azioni: società quotate, earnings, M&A, IPO
+- macroeconomia: PIL, inflazione, banche centrali, tassi
+- geopolitica: conflitti, sanzioni, elezioni, politica estera
+- materie_prime: petrolio, gas, oro, metalli, agricoltura
+- generica: altro
 
 INPUT
 Titolo originale (EN): {title_en}
 Sommario originale (EN): {summary_en or "—"}
 Ticker citati: {tickers_str}
 
-OUTPUT — rispondi ESATTAMENTE in questo formato con 4 blocchi etichettati, senza altro testo prima o dopo:
+OUTPUT — rispondi ESATTAMENTE in questo formato, senza altro testo:
 
-TITOLO: <titolo italiano, max 110 caratteri, riformulato non tradotto letterale>
+CATEGORIA: <una sola tra: azioni, macroeconomia, geopolitica, materie_prime, generica>
 
-SOMMARIO: <riassunto 4-6 frasi (600-900 caratteri). Contesto, dati chiave, attori, significato per il mercato. Stile articolo giornalistico breve. Se l'originale è povero, espandi con contesto settoriale plausibile ma senza inventare fatti specifici.>
+TITOLO: <titolo italiano, max 110 caratteri, riformulato>
 
-IMPATTO: <analisi 3-4 frasi (350-550 caratteri) sull'impatto previsto. Quali settori/asset coinvolti, in che direzione, quali correlazioni di mercato. Concreto.>
+SOMMARIO: <riassunto 4-6 frasi (600-900 caratteri)>
 
-STRATEGIA: <suggerimento operativo 3-4 frasi (350-550 caratteri) rivolto direttamente al consulente al TU. Esempi di apertura: «Valuta di alleggerire...», «Monitora attentamente...», «Considera di proporre ai tuoi clienti...», «Se vedi questi segnali...». Mai «i consulenti potrebbero». Cita ticker se rilevanti.>"""
+IMPATTO: <3-4 frasi (350-550 caratteri)>
+
+STRATEGIA: <3-4 frasi (350-550 caratteri) al TU>"""
 
     try:
         response = client.messages.create(
@@ -68,7 +77,11 @@ STRATEGIA: <suggerimento operativo 3-4 frasi (350-550 caratteri) rivolto diretta
         )
         text = response.content[0].text.strip()
         sections = parse_sections(text)
+        cat = (sections.get("CATEGORIA") or "generica").lower().strip()
+        if cat not in CATEGORIES:
+            cat = "generica"
         return (
+            cat,
             sections.get("TITOLO"),
             sections.get("SOMMARIO"),
             sections.get("IMPATTO"),
@@ -77,16 +90,15 @@ STRATEGIA: <suggerimento operativo 3-4 frasi (350-550 caratteri) rivolto diretta
         )
     except Exception as e:
         print(f"  errore Claude: {e}")
-        return None, None, None, None, None
+        return None, None, None, None, None, None
 
 
 def main():
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
     client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
-    # FILTRO INTELLIGENTE: solo news con analisi mancante o incompleta
     result = supabase.table("news") \
-        .select("id, title, summary, tickers, title_it, summary_it, impact_it, strategy_it") \
+        .select("id, title, summary, tickers, title_it, summary_it, impact_it, strategy_it, category") \
         .execute()
 
     all_rows = result.data or []
@@ -94,10 +106,11 @@ def main():
         r for r in all_rows
         if not r.get("title_it") or not r.get("summary_it")
         or not r.get("impact_it") or not r.get("strategy_it")
+        or not r.get("category")
     ]
 
     print(f"Database: {len(all_rows)} news totali.")
-    print(f"Da riprocessare (analisi incompleta): {len(rows_to_process)}\n")
+    print(f"Da riprocessare (incomplete o senza categoria): {len(rows_to_process)}\n")
 
     if not rows_to_process:
         print("Tutte le news sono complete. Nessun lavoro da fare.")
@@ -111,26 +124,27 @@ def main():
         tickers = row.get("tickers")
         print(f"[{i}/{len(rows_to_process)}] {(title_en or '')[:60]}")
 
-        title_it, summary_it, impact_it, strategy_it, raw_text = generate_full_analysis(
+        cat, title_it, summary_it, impact_it, strategy_it, raw_text = generate_full_analysis(
             client, title_en, summary_en, tickers
         )
 
         if not impact_it or not strategy_it:
             failed += 1
-            print(f"  parsing parziale (TITOLO={bool(title_it)}, SOMM={bool(summary_it)}, IMP={bool(impact_it)}, STR={bool(strategy_it)})")
+            print(f"  parsing parziale")
             if raw_text:
-                print(f"  Prime 200 lettere risposta Claude: {raw_text[:200]}")
+                print(f"  Prime 200 lettere: {raw_text[:200]}")
             continue
 
         try:
             supabase.table("news").update({
+                "category": cat,
                 "title_it": title_it,
                 "summary_it": summary_it,
                 "impact_it": impact_it,
                 "strategy_it": strategy_it,
             }).eq("id", row["id"]).execute()
             updated += 1
-            print(f"  ok recuperata")
+            print(f"  ok [{cat}]")
         except Exception as e:
             print(f"  errore update: {e}")
 
