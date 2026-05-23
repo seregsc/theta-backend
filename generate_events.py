@@ -5,12 +5,13 @@ URL: https://nfs.faireconomy.media/ff_calendar_thisweek.json
 
 Per ogni evento di alta rilevanza:
 - Dati strutturati (data, ora, paese, impatto, valori): da Forex Factory
-- Analisi italiana (summary, baseline, surprise, what to watch, preparation): generata da Claude
+- Analisi italiana (summary, baseline, surprise, what to watch, preparation): generata da Claude Sonnet
 """
 import os
 import json
 import requests
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from supabase import create_client
 from anthropic import Anthropic
 
@@ -25,9 +26,11 @@ KEEP_HOURS = 240  # 10 giorni di archivio
 # Filtriamo solo paesi rilevanti per consulenti italiani
 RELEVANT_COUNTRIES = {"USD", "EUR", "GBP", "CNY", "JPY", "CHF", "CAD"}
 
-# Massimo eventi da generare (per non sforare token Claude)
-MAX_EVENTS = 12
+# Massimo eventi da generare per evitare costi eccessivi
+MAX_EVENTS = 30
 
+# Fuso orario italiano (gestisce automaticamente ora legale/solare)
+ROME_TZ = ZoneInfo("Europe/Rome")
 
 MONTHS_IT = ["Gen", "Feb", "Mar", "Apr", "Mag", "Giu", "Lug", "Ago", "Set", "Ott", "Nov", "Dic"]
 
@@ -68,12 +71,12 @@ def filter_relevant_events(events):
         if impact not in ("high", "medium"):
             continue
         relevant.append(e)
-    print(f"Eventi rilevanti dopo filtro: {len(relevant)}")
+    print(f"Eventi rilevanti dopo filtro (paesi/importance): {len(relevant)}")
     return relevant
 
 
 def normalize_event(e):
-    """Normalizza un evento Forex Factory in formato per il prompt Claude."""
+    """Normalizza un evento Forex Factory convertendo data/ora in fuso Roma."""
     country = e.get("country", "USD")
     title = e.get("title", "")
     date_str = e.get("date", "")
@@ -82,21 +85,22 @@ def normalize_event(e):
     previous = e.get("previous", "")
     actual = e.get("actual", "")
 
-    # Parse data ISO (es: "2026-05-22T08:30:00-04:00")
     try:
+        # Parse data ISO (gestisce automaticamente offset come "-04:00" o "Z")
         dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-        # Converti in CET (UTC+1 / UTC+2 estate). Approx: usiamo UTC+2.
-        dt_cet = dt.astimezone(timezone(timedelta(hours=2)))
-        event_date = dt_cet.strftime("%Y-%m-%d")
-        date_label = f"{dt_cet.day} {MONTHS_IT[dt_cet.month - 1]}"
-        event_time = dt_cet.strftime("%H:%M CET")
-        days_from_now = (dt_cet.date() - datetime.now(timezone.utc).date()).days
+        # Converti in Europe/Rome (gestisce automaticamente ora legale/solare)
+        dt_rome = dt.astimezone(ROME_TZ)
+
+        event_date = dt_rome.strftime("%Y-%m-%d")
+        date_label = f"{dt_rome.day} {MONTHS_IT[dt_rome.month - 1]}"
+        event_time = dt_rome.strftime("%H:%M CET")
+
+        # days_from_now calcolato in fuso Roma (oggi a Roma vs giorno evento a Roma)
+        now_rome = datetime.now(ROME_TZ)
+        days_from_now = (dt_rome.date() - now_rome.date()).days
     except Exception as ex:
-        print(f"  errore parse data {date_str}: {ex}")
-        event_date = None
-        date_label = ""
-        event_time = ""
-        days_from_now = 0
+        print(f"  errore parse data '{date_str}': {ex}")
+        return None
 
     country_info = COUNTRY_MAP.get(country, {"region": country, "label": f"Macro {country}"})
 
@@ -253,39 +257,47 @@ def main():
         print("Nessun evento rilevante trovato. Esco.")
         return
 
-    # Ordina per data ascendente (eventi più imminenti per primi)
-    relevant.sort(key=lambda x: x.get("date", ""))
+    # Normalizza tutti gli eventi (con fuso Roma)
+    normalized = []
+    for e in relevant:
+        n = normalize_event(e)
+        if n:
+            normalized.append(n)
+    print(f"Eventi normalizzati: {len(normalized)}")
 
-    # Limita al massimo configurato
-    relevant = relevant[:MAX_EVENTS]
-    print(f"Elaboro {len(relevant)} eventi più imminenti.\n")
+    # Filtra solo eventi futuri o di oggi (no eventi del passato)
+    today_rome = datetime.now(ROME_TZ).date()
+    upcoming = [n for n in normalized if n.get("event_date") and n["event_date"] >= today_rome.isoformat()]
+    print(f"Eventi futuri (da oggi {today_rome}): {len(upcoming)}")
+
+    # Ordina per data crescente
+    upcoming.sort(key=lambda x: (x.get("event_date", ""), x.get("event_time", "")))
+
+    # Limita
+    upcoming = upcoming[:MAX_EVENTS]
+    print(f"Elaboro {len(upcoming)} eventi (massimo {MAX_EVENTS}).\n")
 
     print(f"3. Genero analisi italiana e salvo (uno per volta)...")
     saved = 0
     skipped = 0
     failed = 0
 
-    for i, e in enumerate(relevant, 1):
-        normalized = normalize_event(e)
-        if not normalized.get("event_date"):
-            failed += 1
-            continue
-
+    for i, n in enumerate(upcoming, 1):
         # Salta se già nel database
-        if check_existing_event(supabase, normalized["ff_title"], normalized["event_date"]):
+        if check_existing_event(supabase, n["ff_title"], n["event_date"]):
             skipped += 1
-            print(f"  [{i}/{len(relevant)}] · gia in db: {normalized['ff_title'][:60]}")
+            print(f"  [{i}/{len(upcoming)}] gia in db: {n['ff_title'][:60]}")
             continue
 
-        print(f"  [{i}/{len(relevant)}] {normalized['ff_title'][:60]}")
-        analysis = generate_italian_analysis(client, normalized)
+        print(f"  [{i}/{len(upcoming)}] {n['event_date']} {n['event_time']} - {n['ff_title'][:60]}")
+        analysis = generate_italian_analysis(client, n)
 
         if not analysis or not analysis.get("title"):
             failed += 1
             print(f"    saltato: analisi fallita")
             continue
 
-        if save_event(supabase, normalized, analysis):
+        if save_event(supabase, n, analysis):
             saved += 1
             print(f"    ok: {analysis.get('title', '?')[:60]}")
         else:
