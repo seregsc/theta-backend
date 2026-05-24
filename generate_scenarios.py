@@ -127,12 +127,12 @@ OUTPUT — rispondi SOLO con JSON puro, un singolo oggetto, senza markdown:
     "vix": "valore stimato"
   }},
   "winners": [
-    {{"ticker": "XOM", "name": "ExxonMobil", "rationale": "Spiegazione breve 1-2 frasi"}},
-    {{"ticker": "GLD", "name": "SPDR Gold", "rationale": "..."}}
+    {{"ticker": "XOM", "name": "ExxonMobil", "expected_move": "+15-25%", "why": "Spiegazione breve 1-2 frasi sul perché beneficia"}},
+    {{"ticker": "GLD", "name": "SPDR Gold", "expected_move": "+10-18%", "why": "..."}}
   ],
   "losers": [
-    {{"ticker": "QQQ", "name": "Invesco QQQ", "rationale": "..."}},
-    {{"ticker": "EZA", "name": "iShares South Africa", "rationale": "..."}}
+    {{"ticker": "QQQ", "name": "Invesco QQQ", "expected_move": "-20/-30%", "why": "..."}},
+    {{"ticker": "EZA", "name": "iShares South Africa", "expected_move": "-25/-35%", "why": "..."}}
   ],
   "hedge_strategy": "Strategia di copertura 3-4 frasi (300-500 caratteri) al TU al consulente: «valuta...», «considera...», «monitora...».",
   "early_warning": ["Segnale precoce 1", "Segnale precoce 2", "Segnale precoce 3"]
