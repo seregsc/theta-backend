@@ -1,3 +1,39 @@
+def get_tickers_to_fetch(supabase):
+    """Combina ticker hardcoded + tutti gli ETF attivi dal catalogo + ticker da holdings clienti reali."""
+    
+    # 1. Ticker hardcoded (compatibilità con setup attuale)
+    HARDCODED_TICKERS = [
+        "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA",
+        # ... resto della tua lista esistente
+    ]
+    
+    tickers = set(HARDCODED_TICKERS)
+    
+    # 2. ETF dal catalogo (attivi)
+    try:
+        res = supabase.table("etf_catalog").select("ticker").eq("active", True).execute()
+        for row in res.data or []:
+            tickers.add(row["ticker"])
+    except Exception as e:
+        print(f"  etf_catalog fetch error: {e}")
+    
+    # 3. Ticker effettivamente detenuti dai clienti (anche se non in catalogo)
+    try:
+        res = supabase.table("holdings").select("ticker").execute()
+        for row in res.data or []:
+            tickers.add(row["ticker"])
+    except Exception as e:
+        print(f"  holdings fetch error: {e}")
+    
+    return sorted(tickers)
+
+
+# Nella main():
+# tickers = get_tickers_to_fetch(supabase)
+# print(f"Fetcho prezzi per {len(tickers)} ticker totali")
+
+
+
 import os
 import yfinance as yf
 from supabase import create_client
