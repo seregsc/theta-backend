@@ -3,6 +3,7 @@ Generatore di stress test live per Theta.
 - 1 scenario nuovo al giorno (alle 7:00 italiane via cron-job.org)
 - Mai cancellati: archivio storico permanente
 - Diversificazione: il prompt riceve i titoli degli scenari passati per non duplicare
+- Include analisi settoriale: affected_sectors + sector_impact per impatti INDIRETTI sui clienti
 """
 import os
 import json
@@ -123,18 +124,45 @@ Il consulente leggerà questi scenari e li userà spesso per spiegare ai clienti
 - Negli IMPATTI usa frasi pratiche tipo "petrolio sale del 30-50%" non "shock energetico negativo".
 - Nella HEDGE_STRATEGY parla al TU al consulente con verbi concreti: «valuta», «considera», «alleggerisci», «monitora».
 
+CRUCIALE — IMPATTO SETTORIALE PER CLIENTI
+Oltre ai ticker specifici di winners/losers, devi indicare quali SETTORI sarebbero impattati dallo scenario.
+I clienti spesso detengono ETF settoriali (non solo singoli titoli), quindi serve identificare gli IMPATTI INDIRETTI tramite settore.
+
+SETTORI DISPONIBILI (usa SOLO questi tag esatti):
+- ai → Intelligenza Artificiale (ETF tipo XAIQ, AIQ, BOTZ)
+- semis → Semiconduttori (SMH, SOXX, NVDA, AMD, TSM, ASML)
+- defense → Difesa & Sicurezza (ITA, XAR, RTX, LMT, BA)
+- nuclear → Nucleare (URA, NLR, CCJ)
+- space → Settore Spaziale (UFO, ROK)
+- energy → Energia tradizionale (XLE, XOM, CVX, oil & gas)
+- health → Sanità (XLV, JNJ, PFE, biotech)
+- finance → Banche & Finanza (XLF, JPM, GS, banche EU)
+- consumer → Beni di consumo (XLP, XLY)
+- industrial → Industria (XLI, CAT, GE)
+- lusso → Lusso (LVMH, KER, MC.PA, RACE)
+- auto → Automotive (TSLA, F, GM, STLA, VOW)
+- emerging → Mercati emergenti (EEM, VWO, China)
+- bonds → Obbligazioni (TLT, AGG, IEF, BTPS)
+- gold → Oro & Metalli preziosi (GLD, IAU, SLV)
+- commodities → Materie prime (DBA, oil, gas, rame)
+- crypto → Criptovalute (BTC, ETH)
+- real_estate → Immobiliare (VNQ, REIT generici)
+- utilities → Utility (XLU)
+- reit → Immobiliare quotato (SPG, PLD)
+- indices → Indici di mercato (SPY, QQQ, IWM, DIA, ACWI)
+
 OUTPUT — rispondi SOLO con JSON puro, un singolo oggetto, senza markdown:
 
 {{
-  "title": "Titolo evocativo, max 80 caratteri (es. 'Iran chiude Stretto di Hormuz, petrolio a 150$')",
+  "title": "Titolo evocativo, max 80 caratteri",
   "icon": "🌐",
   "probability": "Bassa (15%) | Media (35%) | Alta (60%)",
   "severity": "Lieve | Media | Severa | Critica",
   "time_horizon": "1-3 mesi | 3-6 mesi | 6-12 mesi | 12-24 mesi",
-  "description": "Descrizione 5-7 frasi (700-1000 caratteri) IN ITALIANO SEMPLICE che racconta la storia: cosa potrebbe accadere, perché è plausibile, quale catena di eventi porterebbe a questo scenario. Come lo racconteresti a un cliente al telefono.",
-  "trigger_events": ["Evento trigger 1 (in parole semplici)", "Evento trigger 2", "Evento trigger 3", "Evento trigger 4"],
+  "description": "Descrizione 5-7 frasi (700-1000 caratteri) in italiano semplice.",
+  "trigger_events": ["Evento 1", "Evento 2", "Evento 3", "Evento 4"],
   "market_impact": {{
-    "equity_global": "+5% / -15% / etc",
+    "equity_global": "+5% / -15%",
     "equity_emerging": "+/-X%",
     "bond_10y_us": "+50bps / -30bps",
     "oil": "+/-X%",
@@ -142,24 +170,41 @@ OUTPUT — rispondi SOLO con JSON puro, un singolo oggetto, senza markdown:
     "usd_index": "+/-X%",
     "vix": "valore stimato"
   }},
+  "affected_sectors": ["ai", "semis", "indices"],
+  "sector_impact": {{
+    "ai": {{
+      "expected_move": "-25/-40%",
+      "why": "Spiegazione in italiano semplice di perché questo settore sarebbe penalizzato/avvantaggiato"
+    }},
+    "semis": {{
+      "expected_move": "-20/-30%",
+      "why": "..."
+    }}
+  }},
   "winners": [
-    {{"ticker": "XOM", "name": "ExxonMobil", "expected_move": "+15-25%", "why": "Spiegazione breve 1-2 frasi in italiano semplice sul perché beneficia"}},
+    {{"ticker": "XOM", "name": "ExxonMobil", "expected_move": "+15-25%", "why": "Spiegazione in italiano semplice"}},
     {{"ticker": "GLD", "name": "SPDR Gold", "expected_move": "+10-18%", "why": "..."}}
   ],
   "losers": [
     {{"ticker": "QQQ", "name": "Invesco QQQ", "expected_move": "-20/-30%", "why": "..."}},
-    {{"ticker": "EZA", "name": "iShares South Africa", "expected_move": "-25/-35%", "why": "..."}}
+    {{"ticker": "NVDA", "name": "NVIDIA", "expected_move": "-25/-35%", "why": "..."}}
   ],
-  "hedge_strategy": "Strategia di copertura 3-4 frasi (300-500 caratteri) al TU al consulente, in italiano semplice: «valuta...», «considera...», «monitora...». Cosa fare in pratica per proteggere il portafoglio.",
-  "early_warning": ["Segnale precoce 1 in parole semplici", "Segnale precoce 2", "Segnale precoce 3"]
+  "hedge_strategy": "3-4 frasi al TU al consulente in italiano semplice.",
+  "early_warning": ["Segnale 1", "Segnale 2", "Segnale 3"]
 }}
 
-Genera un solo scenario, originale, non simile a nessuno dei precedenti."""
+REGOLE CRITICHE SULL'IMPATTO SETTORIALE:
+1. affected_sectors deve contenere TUTTI i settori realmente impattati (sia in positivo che negativo). Per uno scenario "Bolla AI scoppia": tipicamente ai, semis, indices in NEGATIVO + bonds, gold in POSITIVO.
+2. Per ogni settore in affected_sectors, deve esserci una entry corrispondente in sector_impact con expected_move e why.
+3. expected_move usa SEMPRE il formato "+X-Y%" (positivo) o "-X/-Y%" (negativo).
+4. Sii completo: aggiungi anche settori "rifugio" che salgono in caso di scenari negativi (oro, bonds, utility, difesa).
+
+Genera UN solo scenario, originale, non simile a nessuno dei precedenti."""
 
     try:
         response = client.messages.create(
             model=MODEL,
-            max_tokens=3000,
+            max_tokens=3500,
             messages=[{"role": "user", "content": prompt}],
         )
         text = response.content[0].text.strip()
@@ -179,6 +224,8 @@ def save_scenario(supabase, s):
         "description": s.get("description"),
         "trigger_events": s.get("trigger_events"),
         "market_impact": s.get("market_impact"),
+        "affected_sectors": s.get("affected_sectors"),
+        "sector_impact": s.get("sector_impact"),
         "winners": s.get("winners"),
         "losers": s.get("losers"),
         "hedge_strategy": s.get("hedge_strategy"),
@@ -215,7 +262,11 @@ def main():
         print("Generazione fallita.")
         return
 
-    print(f"   Generato: {scenario.get('title')}\n")
+    print(f"   Generato: {scenario.get('title')}")
+    n_sectors = len(scenario.get("affected_sectors") or [])
+    n_winners = len(scenario.get("winners") or [])
+    n_losers = len(scenario.get("losers") or [])
+    print(f"   {n_sectors} settori, {n_winners} winners, {n_losers} losers\n")
 
     print("4. Salvo nel database...")
     if save_scenario(supabase, scenario):
