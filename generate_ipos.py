@@ -1,8 +1,12 @@
 """
 generate_ipos.py
-Pesca IPO da Finnhub + arricchimento AI Claude (con timeline roadshow).
+Pesca IPO da Finnhub + lista curata di big names + arricchimento AI Claude.
 Salva su ipos_live (UPSERT su ticker+ipo_date).
-Settimanale via GitHub Actions.
+
+Tier system:
+  1 = Big names curati (Stripe, Klarna, SpaceX, OpenAI, ecc.) - sempre in cima
+  2 = Finnhub IPO con offer significativo (>$100M)
+  3 = Finnhub IPO minori (SPAC, micro-cap)
 """
 
 import os
@@ -30,9 +34,58 @@ MODEL = "claude-sonnet-4-5"
 
 DAYS_BACK = 30
 DAYS_FORWARD = 180
-MAX_IPOS_TO_ENRICH = 15
+MAX_FINNHUB_IPOS = 12  # Limito Finnhub per non sprecare AI
 HTTP_TIMEOUT = 20
 AI_TIMEOUT = 60
+
+# Soglia per tier 2 vs tier 3
+TIER2_MIN_OFFER_USD = 100_000_000  # $100M minimum offer
+TIER2_MIN_SHARES = 5_000_000        # o 5M shares
+
+# ═══════════════════════════════════════════════════════════════
+# TIER 1 — BIG NAMES CURATED
+# Aziende attese in IPO 2026-2028 (alcune confermate, altre rumored)
+# ═══════════════════════════════════════════════════════════════
+TIER1_BIG_NAMES = [
+    # Fintech
+    {"ticker": "STRP", "name": "Stripe", "geo": "USA", "exchange": "NYSE", "expected_date": "H2 2026", "status": "pre-ipo", "hint_sector": "fintech / payments"},
+    {"ticker": "KLAR", "name": "Klarna", "geo": "EU", "exchange": "NYSE", "expected_date": "Q3 2026", "status": "pre-ipo", "hint_sector": "fintech / BNPL"},
+    {"ticker": "REVO", "name": "Revolut", "geo": "EU", "exchange": "LSE/NASDAQ", "expected_date": "2026-2027", "status": "rumored", "hint_sector": "fintech / neobank"},
+    {"ticker": "CHYM", "name": "Chime Financial", "geo": "USA", "exchange": "NASDAQ", "expected_date": "Q4 2026", "status": "pre-ipo", "hint_sector": "fintech / neobank"},
+    {"ticker": "PLAID", "name": "Plaid", "geo": "USA", "exchange": "NASDAQ", "expected_date": "2026-2027", "status": "rumored", "hint_sector": "fintech / open banking"},
+    {"ticker": "BREX", "name": "Brex", "geo": "USA", "exchange": "NASDAQ", "expected_date": "2027", "status": "rumored", "hint_sector": "fintech / corporate cards"},
+
+    # AI / Data
+    {"ticker": "OPENAI", "name": "OpenAI", "geo": "USA", "exchange": "NASDAQ", "expected_date": "2027+", "status": "rumored", "hint_sector": "AI foundation models"},
+    {"ticker": "ANTHRO", "name": "Anthropic", "geo": "USA", "exchange": "NASDAQ", "expected_date": "2027+", "status": "rumored", "hint_sector": "AI foundation models"},
+    {"ticker": "XAI", "name": "xAI", "geo": "USA", "exchange": "NASDAQ", "expected_date": "2026-2027", "status": "rumored", "hint_sector": "AI Musk"},
+    {"ticker": "DBX2", "name": "Databricks", "geo": "USA", "exchange": "NASDAQ", "expected_date": "Q4 2026", "status": "pre-ipo", "hint_sector": "Data / AI lakehouse"},
+    {"ticker": "CHRE", "name": "Cohere", "geo": "Canada", "exchange": "NASDAQ", "expected_date": "2026-2027", "status": "rumored", "hint_sector": "AI enterprise LLM"},
+
+    # Crypto
+    {"ticker": "KRAK", "name": "Kraken", "geo": "USA", "exchange": "NASDAQ", "expected_date": "2026", "status": "rumored", "hint_sector": "crypto exchange"},
+    {"ticker": "CIRCLE", "name": "Circle Internet", "geo": "USA", "exchange": "NYSE", "expected_date": "2026", "status": "pre-ipo", "hint_sector": "crypto stablecoin USDC"},
+
+    # Tech consumer
+    {"ticker": "DISCRD", "name": "Discord", "geo": "USA", "exchange": "NASDAQ", "expected_date": "2026", "status": "rumored", "hint_sector": "social communication"},
+    {"ticker": "CANVA", "name": "Canva", "geo": "Australia", "exchange": "NASDAQ", "expected_date": "2026", "status": "rumored", "hint_sector": "design SaaS"},
+    {"ticker": "NOTION", "name": "Notion Labs", "geo": "USA", "exchange": "NASDAQ", "expected_date": "2027", "status": "rumored", "hint_sector": "productivity SaaS"},
+
+    # Space / Defense / Auto
+    {"ticker": "SPCX", "name": "SpaceX", "geo": "USA", "exchange": "NASDAQ", "expected_date": "2027+", "status": "rumored", "hint_sector": "space / aerospace"},
+    {"ticker": "ANDR", "name": "Anduril Industries", "geo": "USA", "exchange": "NYSE", "expected_date": "2026-2027", "status": "rumored", "hint_sector": "defense tech AI"},
+    {"ticker": "WAYMO", "name": "Waymo", "geo": "USA", "exchange": "NASDAQ", "expected_date": "2027+", "status": "rumored", "hint_sector": "autonomous driving"},
+    {"ticker": "WYVE", "name": "Wayve Technologies", "geo": "EU", "exchange": "NASDAQ", "expected_date": "Q1 2027", "status": "pre-ipo", "hint_sector": "autonomous driving"},
+
+    # Recently IPO'd (utili come reference per il consulente)
+    {"ticker": "CRWV", "name": "CoreWeave", "geo": "USA", "exchange": "NASDAQ", "expected_date": "Q1 2025 (IPO completed)", "status": "priced", "hint_sector": "AI cloud GPU"},
+    {"ticker": "RDDT", "name": "Reddit", "geo": "USA", "exchange": "NYSE", "expected_date": "Mar 2024 (IPO completed)", "status": "priced", "hint_sector": "social media"},
+    {"ticker": "ALAB", "name": "Astera Labs", "geo": "USA", "exchange": "NASDAQ", "expected_date": "Mar 2024 (IPO completed)", "status": "priced", "hint_sector": "AI connectivity chip"},
+    {"ticker": "TEM", "name": "Tempus AI", "geo": "USA", "exchange": "NASDAQ", "expected_date": "Giu 2024 (IPO completed)", "status": "priced", "hint_sector": "biotech AI"},
+
+    # Healthcare
+    {"ticker": "RXRX2", "name": "Recursion Pharmaceuticals", "geo": "USA", "exchange": "NASDAQ", "expected_date": "2026 (follow-on)", "status": "pre-ipo", "hint_sector": "biotech AI drug discovery"},
+]
 
 
 def fetch_finnhub_ipos():
@@ -51,20 +104,16 @@ def fetch_finnhub_ipos():
         if isinstance(data, dict):
             if "ipoCalendar" in data and isinstance(data["ipoCalendar"], list):
                 return data["ipoCalendar"]
-            if data.get("error"):
-                print(f"[Finnhub] errore API: {data['error']}", flush=True)
-                return []
             print(f"[Finnhub] formato inatteso (dict): {list(data.keys())[:5]}", flush=True)
             return []
         if isinstance(data, list):
             return data
-        print(f"[Finnhub] formato inatteso: {type(data)}", flush=True)
         return []
     except requests.Timeout:
-        print(f"[Finnhub] TIMEOUT dopo {HTTP_TIMEOUT}s", flush=True)
+        print(f"[Finnhub] TIMEOUT", flush=True)
         return []
     except Exception as e:
-        print(f"[Finnhub] errore connessione: {e}", flush=True)
+        print(f"[Finnhub] errore: {e}", flush=True)
         return []
 
 
@@ -117,10 +166,8 @@ def normalize_finnhub_ipo(item):
 
     geo_map = {
         "NASDAQ": "USA", "NYSE": "USA", "AMEX": "USA",
-        "LSE": "EU", "LON": "EU", "EURONEXT": "EU",
-        "XETRA": "EU", "MIL": "EU", "BIT": "EU",
-        "HKEX": "Asia", "HK": "Asia", "TSE": "Asia",
-        "TSX": "Canada",
+        "LSE": "EU", "EURONEXT": "EU", "XETRA": "EU", "MIL": "EU",
+        "HKEX": "Asia", "TSE": "Asia", "TSX": "Canada",
     }
     geo = "USA"
     if exchange:
@@ -138,6 +185,15 @@ def normalize_finnhub_ipo(item):
         except Exception:
             pass
 
+    # Determina tier 2 vs 3 in base a offer size
+    shares_int = int(shares) if shares else 0
+    if market_cap_estimate and market_cap_estimate >= TIER2_MIN_OFFER_USD:
+        tier = 2
+    elif shares_int >= TIER2_MIN_SHARES:
+        tier = 2
+    else:
+        tier = 3
+
     return {
         "ticker": symbol,
         "name": name,
@@ -146,10 +202,30 @@ def normalize_finnhub_ipo(item):
         "ipo_date": ipo_date_str if ipo_d else None,
         "expected_date": expected_date_label,
         "price_range": price_range,
-        "shares_offered": int(shares) if shares else None,
+        "shares_offered": shares_int or None,
         "market_cap_estimate": market_cap_estimate,
         "status": status,
+        "tier": tier,
         "raw_data": item,
+    }
+
+
+def build_tier1_basic(entry):
+    """Trasforma un entry TIER1 nel formato basic per l'AI."""
+    return {
+        "ticker": entry["ticker"],
+        "name": entry["name"],
+        "exchange": entry.get("exchange") or "—",
+        "geo": entry.get("geo") or "USA",
+        "ipo_date": None,
+        "expected_date": entry.get("expected_date") or "TBD",
+        "price_range": "—",
+        "shares_offered": None,
+        "market_cap_estimate": None,
+        "status": entry.get("status") or "rumored",
+        "tier": 1,
+        "hint_sector": entry.get("hint_sector") or "",
+        "raw_data": {"curated": True},
     }
 
 
@@ -188,7 +264,10 @@ def parse_json(text):
 
 
 def enrich_ipo_with_ai(anthropic_client, ipo_basic):
-    """Arricchimento completo con analisi finanziaria + timeline roadshow."""
+    is_curated = ipo_basic.get("tier") == 1
+    hint = ipo_basic.get("hint_sector", "")
+    curated_note = f"\nNOTA: questa è un'azienda molto nota di settore '{hint}'. Usa la tua conoscenza dettagliata per generare un'analisi approfondita basata sui rumor di mercato e dati pubblici. Se è 'rumored', dichiaralo chiaramente nella thesis." if is_curated else ""
+
     prompt = f"""Sei un equity research analyst senior italiano. Devi arricchire un'IPO con analisi finanziaria + TIMELINE ROADSHOW per un consulente Fineco italiano.
 
 ═══════════════════════════════════
@@ -198,39 +277,29 @@ Ticker: {ipo_basic.get('ticker', '—')}
 Nome: {ipo_basic.get('name', '—')}
 Exchange: {ipo_basic.get('exchange', '—')}
 Geo: {ipo_basic.get('geo', '—')}
-Data IPO: {ipo_basic.get('expected_date', 'TBD')}
+Data attesa: {ipo_basic.get('expected_date', 'TBD')}
 Range prezzo: {ipo_basic.get('price_range', '—')}
 Status: {ipo_basic.get('status', '—')}
-Azioni offerte: {ipo_basic.get('shares_offered', '—')}
+Azioni offerte: {ipo_basic.get('shares_offered', '—')}{curated_note}
 
 ═══════════════════════════════════
 ISTRUZIONI
 ═══════════════════════════════════
-Se NON CONOSCI l'azienda (micro-cap, SPAC, società minore), restituisci comunque un'analisi basata sul nome/settore/exchange con disclaimer chiaro nella thesis. NON inventare dati finanziari precisi.
+Se NON CONOSCI l'azienda (micro-cap, SPAC sconosciuto), restituisci comunque un'analisi BASIC basata su nome/settore/exchange. Dichiara chiaramente nella thesis che è un'azienda minore non ben coperta.
 
-Settori (slug interno): ai, semis, defense, nuclear, biotech, fintech, luxury, auto, energy, utilities, consumer, industrials, telecom, reits, emerging, gold, copper, crypto, health, real_estate, other.
+Per le AZIENDE NOTE (Stripe, Klarna, OpenAI, SpaceX, Revolut, ecc.) usa la tua conoscenza specifica per fornire analisi approfondita: founders reali, ultimo round funding, ARR/revenue noti, comparable IPO recenti del settore.
+
+Settori (slug): ai, semis, defense, nuclear, biotech, fintech, luxury, auto, energy, utilities, consumer, industrials, telecom, reits, emerging, gold, copper, crypto, health, real_estate, other.
 
 Profili (suited_for): conservative, balanced, growth, aggressive.
 
 ═══════════════════════════════════
-TIMELINE ROADSHOW — IMPORTANTE
+TIMELINE ROADSHOW — OBBLIGATORIO
 ═══════════════════════════════════
-Genera 5-7 milestone storiche e future:
-- 2-3 milestone PASSATE (status: "done") - es. round funding precedenti, breakeven, S-1 filing iniziale
-- 1 milestone CORRENTE (status: "active") - cosa sta succedendo ora (es. roadshow, pricing, filing recente)
-- 2-3 milestone FUTURE (status: "pending") - listing day, lock-up scadenza, prima trimestrale
-
-Date in italiano abbreviate: "Gen 2024", "Q2 2026", "H2 2026", "Mag 2024", ecc.
-
-Esempio timeline per Stripe:
-[
-  {{"date":"Feb 2024","title":"Tender offer secondary $70B","note":"Tender per liquidità dipendenti. Conferma valuation mercato","status":"done"}},
-  {{"date":"2024-2025","title":"Preparazione interna","note":"Audit Sarbanes-Oxley, governance, separazione subsidiary","status":"done"}},
-  {{"date":"Q2 2026","title":"Filing confidential SEC","note":"Rumor: depositato. Underwriters Goldman, JPMorgan, MS","status":"active"}},
-  {{"date":"H2 2026","title":"Pubblicazione S-1","note":"Disclosure finanziari completi. Roadshow USA + EU + Asia","status":"pending"}},
-  {{"date":"Fine 2026","title":"Pricing target NYSE","note":"Range $48-56. Dimensione $5-7B (largest IPO 2026)","status":"pending"}},
-  {{"date":"2027","title":"Lock-up & insider sales","note":"Sequoia, Founders Fund potranno liquidare. Volume enorme","status":"pending"}}
-]
+5-7 milestone con date in italiano abbreviate ("Mag 2024", "Q2 2026", "H2 2026", ecc):
+- 2-3 PASSATE (status: "done") - round funding, breakeven, filing iniziale
+- 1 CORRENTE (status: "active") - cosa sta succedendo ora
+- 2-3 FUTURE (status: "pending") - listing, lock-up, prima trimestrale
 
 NIENTE jargon vuoto. Lessico semplice. Frasi brevi.
 
@@ -268,7 +337,7 @@ FORMATO OUTPUT (SOLO JSON, NESSUN TESTO PRIMA O DOPO)
   "ebitda_margin": "31%",
   "debt_eq": "1.8x",
   "valuation_method": "EV/Revenue 15x su run-rate $2.3B",
-  "last_round": "$23B (Mag 2024, Coatue)",
+  "last_round": "$23B (Mag 2024)",
   "score": 88,
   "upside": "+52%",
   "risk": "MED",
@@ -280,7 +349,7 @@ FORMATO OUTPUT (SOLO JSON, NESSUN TESTO PRIMA O DOPO)
 }}
 
 Se non conosci dati precisi, usa "—" o null. Score 0-100. Rating BUY/HOLD/AVOID. Risk LOW/MED/HIGH.
-La timeline DEVE avere almeno 5 milestone con almeno 1 active e 2 done."""
+La timeline DEVE avere almeno 5 milestone."""
 
     try:
         response = anthropic_client.messages.create(
@@ -297,6 +366,8 @@ La timeline DEVE avere almeno 5 milestone con almeno 1 active e 2 done."""
 
 def merge_ipo(basic, enriched):
     merged = {**basic}
+    # rimuovi hint_sector che non va salvato in DB
+    merged.pop("hint_sector", None)
     if enriched:
         for key in ["sector", "category", "headline", "summary", "business", "thesis",
                     "pros", "cons", "catalysts", "competitors", "comparables",
@@ -327,12 +398,54 @@ def save_ipo(supabase, row):
 
 
 def cleanup_old_ipos(supabase):
+    """Rimuove IPO Finnhub molto vecchie (tier 2 e 3). I tier 1 li teniamo sempre."""
     cutoff = (date.today() - timedelta(days=90)).isoformat()
     try:
-        supabase.table("ipos_live").delete().lt("ipo_date", cutoff).execute()
-        print(f"[cleanup] vecchie IPO rimosse", flush=True)
+        supabase.table("ipos_live").delete() \
+            .lt("ipo_date", cutoff) \
+            .neq("tier", 1) \
+            .execute()
+        print(f"[cleanup] vecchie IPO rimosse (tier 2-3)", flush=True)
     except Exception as e:
         print(f"[cleanup error] {e}", flush=True)
+
+
+def process_ipo(anthropic_client, supabase, basic, existing, label):
+    """Arricchisce e salva un'IPO. Restituisce True se salvato con successo."""
+    ticker = basic.get("ticker")
+    ipo_date = basic.get("ipo_date") or "TBD"
+    key = f"{ticker}_{ipo_date}"
+
+    # Skip se già arricchita di recente (< 7 giorni) e status non cambiato
+    if key in existing:
+        existing_row = existing[key]
+        old_status = existing_row.get("status")
+        enriched_at = existing_row.get("enriched_at")
+        if enriched_at and old_status == basic.get("status"):
+            try:
+                enr_dt = datetime.fromisoformat(enriched_at.replace("Z", "+00:00"))
+                if (datetime.now(timezone.utc) - enr_dt).days < 7:
+                    print(f"    SKIP {ticker} (già arricchito)", flush=True)
+                    return False
+            except Exception:
+                pass
+
+    print(f"    AI per {ticker} ({basic.get('name', '')[:40]}) [{label}]...", flush=True)
+    t0 = time.time()
+    enriched = enrich_ipo_with_ai(anthropic_client, basic)
+    t_ai = time.time() - t0
+    print(f"      AI rispose in {t_ai:.1f}s", flush=True)
+
+    if not enriched:
+        row = basic
+        row.pop("hint_sector", None)
+        row["enriched_at"] = None
+    else:
+        row = merge_ipo(basic, enriched)
+        timeline_count = len(enriched.get("timeline") or [])
+        print(f"      timeline: {timeline_count} milestone", flush=True)
+
+    return save_ipo(supabase, row)
 
 
 def main():
@@ -349,93 +462,86 @@ def main():
         print(f"[init] errore: {e}", flush=True)
         return
 
-    print("[ipos] Avvio fetch IPO calendar da Finnhub...", flush=True)
-    raw_ipos = fetch_finnhub_ipos()
-    print(f"[ipos] {len(raw_ipos)} record grezzi da Finnhub", flush=True)
-
-    if not raw_ipos:
-        print("[ipos] Nessun record. Termino.", flush=True)
-        return
-
-    print(f"[ipos] DEBUG primo record keys: {list(raw_ipos[0].keys())[:15]}", flush=True)
-
-    normalized = []
-    for item in raw_ipos:
-        try:
-            n = normalize_finnhub_ipo(item)
-            if n.get("ticker") and n.get("name"):
-                normalized.append(n)
-        except Exception as e:
-            print(f"  [normalize error] {e}", flush=True)
-
-    print(f"[ipos] {len(normalized)} dopo normalizzazione", flush=True)
-
-    def sort_key(n):
-        status_priority = {"upcoming": 0, "priced": 1, "recent": 2, "pre-ipo": 3, "past": 4, "withdrawn": 5}
-        return (
-            status_priority.get(n.get("status"), 6),
-            -(n.get("market_cap_estimate") or 0),
-            n.get("ipo_date") or "9999",
-        )
-    normalized.sort(key=sort_key)
-
-    to_process = normalized[:MAX_IPOS_TO_ENRICH]
-    print(f"[ipos] {len(to_process)} verranno arricchite con AI (limite={MAX_IPOS_TO_ENRICH})", flush=True)
-
-    print("[ipos] Carico esistenti dal DB...", flush=True)
     existing = fetch_existing_ipos(supabase)
     print(f"[ipos] {len(existing)} IPO già esistenti nel DB", flush=True)
 
-    success = 0
-    skipped = 0
     start_time = time.time()
 
-    for i, basic in enumerate(to_process, 1):
-        ticker = basic.get("ticker")
-        ipo_date = basic.get("ipo_date") or "TBD"
-        key = f"{ticker}_{ipo_date}"
-        elapsed = time.time() - start_time
-
-        if key in existing:
-            existing_row = existing[key]
-            old_status = existing_row.get("status")
-            enriched_at = existing_row.get("enriched_at")
-            if enriched_at and old_status == basic.get("status"):
-                try:
-                    enr_dt = datetime.fromisoformat(enriched_at.replace("Z", "+00:00"))
-                    if (datetime.now(timezone.utc) - enr_dt).days < 7:
-                        skipped += 1
-                        print(f"  [{i}/{len(to_process)}] SKIP {ticker} (già arricchito)", flush=True)
-                        continue
-                except Exception:
-                    pass
-
-        print(f"  [{i}/{len(to_process)}] [{elapsed:.0f}s] AI per {ticker} ({basic.get('name', '')[:40]})...", flush=True)
-        t0 = time.time()
-        enriched = enrich_ipo_with_ai(anthropic_client, basic)
-        t_ai = time.time() - t0
-        print(f"    AI rispose in {t_ai:.1f}s", flush=True)
-
-        if not enriched:
-            print(f"    AI fallita, salvo solo dati base", flush=True)
-            row = basic
-            row["enriched_at"] = None
-        else:
-            row = merge_ipo(basic, enriched)
-            timeline_count = len(enriched.get("timeline") or [])
-            print(f"    timeline: {timeline_count} milestone", flush=True)
-
-        if save_ipo(supabase, row):
-            success += 1
-            cat = row.get("category", "—")
-            sc = row.get("score", "—")
-            print(f"    OK: {cat}, score {sc}", flush=True)
-
+    # ═══════════════════════════════════════════════════════════════
+    # TIER 1 — Big names curated
+    # ═══════════════════════════════════════════════════════════════
+    print(f"\n=== TIER 1: {len(TIER1_BIG_NAMES)} big names curated ===", flush=True)
+    tier1_success = 0
+    for i, entry in enumerate(TIER1_BIG_NAMES, 1):
+        basic = build_tier1_basic(entry)
+        print(f"  [{i}/{len(TIER1_BIG_NAMES)}]", flush=True)
+        if process_ipo(anthropic_client, supabase, basic, existing, "Tier1"):
+            tier1_success += 1
         time.sleep(0.3)
+    print(f"  Tier 1 completato: {tier1_success}/{len(TIER1_BIG_NAMES)}", flush=True)
+
+    # ═══════════════════════════════════════════════════════════════
+    # TIER 2 + 3 — Finnhub
+    # ═══════════════════════════════════════════════════════════════
+    print(f"\n=== TIER 2/3: fetch da Finnhub ===", flush=True)
+    raw_ipos = fetch_finnhub_ipos()
+    print(f"  {len(raw_ipos)} record grezzi", flush=True)
+
+    if raw_ipos:
+        normalized = []
+        for item in raw_ipos:
+            try:
+                n = normalize_finnhub_ipo(item)
+                if n.get("ticker") and n.get("name"):
+                    normalized.append(n)
+            except Exception as e:
+                print(f"  [normalize error] {e}", flush=True)
+
+        # Ordina per tier (tier 2 prima di 3), poi market_cap, poi data
+        def sort_key(n):
+            status_priority = {"upcoming": 0, "priced": 1, "recent": 2, "pre-ipo": 3, "past": 4, "withdrawn": 5}
+            return (
+                n.get("tier", 3),
+                status_priority.get(n.get("status"), 6),
+                -(n.get("market_cap_estimate") or 0),
+                n.get("ipo_date") or "9999",
+            )
+        normalized.sort(key=sort_key)
+
+        # Prendi prima quelle tier 2 (significative), poi qualche tier 3
+        tier2 = [n for n in normalized if n.get("tier") == 2]
+        tier3 = [n for n in normalized if n.get("tier") == 3]
+        print(f"  Tier 2 trovate: {len(tier2)}", flush=True)
+        print(f"  Tier 3 trovate: {len(tier3)}", flush=True)
+
+        # AI enrichment solo per tier 2 (significative) + i primi 3 tier 3 più grossi
+        to_process = tier2[:MAX_FINNHUB_IPOS] + tier3[:3]
+        print(f"  Verranno arricchite: {len(to_process)} (tier2={min(len(tier2), MAX_FINNHUB_IPOS)}, tier3=3)", flush=True)
+
+        tier23_success = 0
+        for i, basic in enumerate(to_process, 1):
+            elapsed = time.time() - start_time
+            print(f"  [{i}/{len(to_process)}] [{elapsed:.0f}s tot]", flush=True)
+            if process_ipo(anthropic_client, supabase, basic, existing, f"Tier{basic.get('tier')}"):
+                tier23_success += 1
+            time.sleep(0.3)
+        print(f"  Tier 2/3 completato: {tier23_success}/{len(to_process)}", flush=True)
+
+        # I tier 3 rimanenti li salviamo SENZA arricchimento AI (dati grezzi only)
+        # così appaiono comunque in UI ma in fondo alla lista
+        remaining_tier3 = tier3[3:30]  # max 30 tier 3 grezze in totale
+        if remaining_tier3:
+            print(f"  Salvo {len(remaining_tier3)} tier 3 rimanenti senza arricchimento AI...", flush=True)
+            saved_raw = 0
+            for basic in remaining_tier3:
+                basic.pop("hint_sector", None)
+                basic["enriched_at"] = None
+                if save_ipo(supabase, basic):
+                    saved_raw += 1
+            print(f"  Salvate raw: {saved_raw}", flush=True)
 
     cleanup_old_ipos(supabase)
-    print(f"\n[ipos] Completato: {success}/{len(to_process)} salvate, {skipped} skipped. "
-          f"Tempo totale: {time.time() - start_time:.1f}s", flush=True)
+    print(f"\n[ipos] TUTTO completato. Tempo totale: {time.time() - start_time:.1f}s", flush=True)
 
 
 if __name__ == "__main__":
