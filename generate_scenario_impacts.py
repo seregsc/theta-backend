@@ -1,4 +1,3 @@
-
 """
 generate_scenario_impacts.py
 Per OGNI scenario attivo + OGNI cliente, fa un'analisi AI personalizzata:
@@ -6,6 +5,10 @@ Per OGNI scenario attivo + OGNI cliente, fa un'analisi AI personalizzata:
 - Storia narrativa "Cosa succede a [cliente]" su misura per quel cliente.
 - Azioni suggerite specifiche.
 - Salva in client_scenario_impacts (UPSERT su client_id+scenario_id).
+
+OTTIMIZZAZIONE COSTI: usa Haiku per analisi.
+Il task è strutturato (mappare ticker→impact con regole chiare) e Haiku ce la fa bene.
+Risparmio ~65% rispetto a Sonnet.
 """
 
 import os
@@ -14,10 +17,18 @@ from datetime import datetime, timedelta, timezone
 from supabase import create_client
 import anthropic
 
+print("[boot] generate_scenario_impacts.py avvio", flush=True)
+
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-MODEL = "claude-sonnet-4-5"
+
+print(f"[boot] env: SUPABASE_URL={'OK' if SUPABASE_URL else 'MANCANTE'}, "
+      f"SUPABASE_KEY={'OK' if SUPABASE_KEY else 'MANCANTE'}, "
+      f"ANTHROPIC_API_KEY={'OK' if ANTHROPIC_API_KEY else 'MANCANTE'}", flush=True)
+
+MODEL = "claude-haiku-4-5-20251001"
+AI_TIMEOUT = 60
 
 SCENARIOS_PER_CLIENT = 3
 
@@ -27,7 +38,7 @@ def fetch_all_clients(supabase):
         res = supabase.table("clients").select("*").execute()
         return res.data or []
     except Exception as e:
-        print(f"[clients error] {e}")
+        print(f"[clients error] {e}", flush=True)
         return []
 
 
@@ -36,7 +47,7 @@ def fetch_client_holdings(supabase, client_id):
         res = supabase.table("holdings").select("*").eq("client_id", client_id).execute()
         return res.data or []
     except Exception as e:
-        print(f"  [holdings error] {e}")
+        print(f"  [holdings error] {e}", flush=True)
         return []
 
 
@@ -57,7 +68,7 @@ def fetch_recent_scenarios(supabase, limit=SCENARIOS_PER_CLIENT):
             .execute()
         return res.data or []
     except Exception as e:
-        print(f"[scenarios error] {e}")
+        print(f"[scenarios error] {e}", flush=True)
         return []
 
 
@@ -100,8 +111,8 @@ def parse_response(text):
     try:
         return json.loads(text)
     except Exception as e:
-        print(f"  parse JSON error: {e}")
-        print(f"  first 300: {text[:300]}")
+        print(f"  parse JSON error: {e}", flush=True)
+        print(f"  first 300: {text[:300]}", flush=True)
         return None
 
 
@@ -189,7 +200,8 @@ La storia deve essere SPECIFICA per questo portafoglio:
 
 NIENTE jargon vuoto tipo: "esposizione strutturale", "tesi compromessa", "rationale solido", "outlook deteriorato", "fondamentali solidi".
 Lessico semplice, frasi brevi (max 25 parole).
-Esempi di buon stile:
+
+Esempio buono:
 ✓ "Per Serena la crisi idrica si traduce in un calo dell'11.5% sul portafoglio totale. L'asset più colpito è ACWI.MI (l'ETF globale), che subirebbe il taglio maggiore in valore assoluto: circa €1.850 in meno. Anche XMME.MI sui mercati emergenti soffre, mentre AI4U.MI sull'intelligenza artificiale cala del 30% per le nuove regole sui consumi idrici dei data center."
 ✗ "Il portafoglio è strutturalmente esposto agli asset penalizzati e richiede un repricing tattico."
 
@@ -240,11 +252,12 @@ Se nessun asset è impattato, restituisci:
             model=MODEL,
             max_tokens=3500,
             messages=[{"role": "user", "content": prompt}],
+            timeout=AI_TIMEOUT,
         )
         text = response.content[0].text.strip()
         return parse_response(text)
     except Exception as e:
-        print(f"  AI error: {e}")
+        print(f"  AI error: {e}", flush=True)
         return None
 
 
@@ -273,7 +286,7 @@ def save_impact(supabase, user_id, client_id, scenario_id, total_value, analysis
         supabase.table("client_scenario_impacts").upsert(row, on_conflict="client_id,scenario_id").execute()
         return True
     except Exception as e:
-        print(f"    save error: {e}")
+        print(f"    save error: {e}", flush=True)
         return False
 
 
@@ -281,19 +294,20 @@ def main():
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
     anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-    print("[scenario_impacts] Avvio analisi AI cliente-scenario...")
+    print(f"[scenario_impacts] Modello: {MODEL}", flush=True)
+    print("[scenario_impacts] Avvio analisi AI cliente-scenario...", flush=True)
 
     prices = fetch_prices(supabase)
-    print(f"[scenario_impacts] {len(prices)} prezzi caricati")
+    print(f"[scenario_impacts] {len(prices)} prezzi caricati", flush=True)
 
     clients = fetch_all_clients(supabase)
-    print(f"[scenario_impacts] {len(clients)} clienti trovati")
+    print(f"[scenario_impacts] {len(clients)} clienti trovati", flush=True)
 
     scenarios = fetch_recent_scenarios(supabase, limit=SCENARIOS_PER_CLIENT)
-    print(f"[scenario_impacts] {len(scenarios)} scenari recenti da analizzare")
+    print(f"[scenario_impacts] {len(scenarios)} scenari recenti da analizzare", flush=True)
 
     if not clients or not scenarios:
-        print("[scenario_impacts] Nulla da elaborare.")
+        print("[scenario_impacts] Nulla da elaborare.", flush=True)
         return
 
     total_runs = 0
@@ -308,12 +322,12 @@ def main():
 
         holdings_raw = fetch_client_holdings(supabase, client_id)
         if not holdings_raw:
-            print(f"  [{client.get('name')}] portafoglio vuoto, salto")
+            print(f"  [{client.get('name')}] portafoglio vuoto, salto", flush=True)
             continue
 
         holdings, total_value = enrich_holdings(holdings_raw, prices)
         if total_value < 100:
-            print(f"  [{client.get('name')}] valore troppo basso, salto")
+            print(f"  [{client.get('name')}] valore troppo basso, salto", flush=True)
             continue
 
         for scenario in scenarios:
@@ -321,7 +335,7 @@ def main():
             if not scenario_id:
                 continue
             total_runs += 1
-            print(f"  → {client.get('name')} × {scenario.get('title', '')[:60]}")
+            print(f"  → {client.get('name')} × {scenario.get('title', '')[:60]}", flush=True)
 
             analysis = analyze_impact(anthropic_client, client, scenario, holdings, total_value)
             if not analysis:
@@ -331,11 +345,11 @@ def main():
             if save_impact(supabase, user_id, client_id, scenario_id, total_value, analysis):
                 success += 1
                 n = len(analysis.get("affected_holdings") or [])
-                print(f"    OK: {n} asset impattati, story={'sì' if analysis.get('story_text') else 'no'}")
+                print(f"    OK: {n} asset impattati, story={'sì' if analysis.get('story_text') else 'no'}", flush=True)
             else:
                 failed += 1
 
-    print(f"\n[scenario_impacts] Completato: {success}/{total_runs} successi, {failed} fallimenti.")
+    print(f"\n[scenario_impacts] Completato: {success}/{total_runs} successi, {failed} fallimenti.", flush=True)
 
 
 if __name__ == "__main__":
