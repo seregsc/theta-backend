@@ -1,0 +1,30 @@
+name: Generate IPOs Calendar (weekly)
+
+on:
+  schedule:
+    - cron: '30 5 * * 1'  # ogni lunedì alle 5:30 UTC (6:30 IT)
+  workflow_dispatch:
+
+jobs:
+  ipos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install supabase anthropic requests
+
+      - name: Run IPO generator
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+        run: python generate_ipos.py
