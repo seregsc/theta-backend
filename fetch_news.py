@@ -93,14 +93,30 @@ def parse_news_item(item):
 
 def generate_full_analysis(client, title_en, summary_en, tickers_csv):
     tickers_str = tickers_csv if tickers_csv else "—"
-    prompt = f"""Sei un analista finanziario senior italiano che scrive direttamente per UN consulente finanziario specifico (l'utente di Theta). Riceverai una notizia in inglese e devi produrre un'analisi completa in italiano professionale + classificare la categoria.
+    prompt = f"""Sei un analista finanziario senior italiano che scrive direttamente per UN consulente finanziario specifico (l'utente di Theta). Riceverai una notizia in inglese e devi produrre un'analisi completa in italiano + classificare la categoria.
 
 REGOLE GENERALI
-- Italiano corretto, lessico finanziario professionale.
 - Sii fattuale: usa SOLO informazioni presenti nel testo originale. Non inventare numeri, date, eventi.
 - Tono neutro nei primi 3 blocchi (TITOLO, SOMMARIO, IMPATTO).
 - Nella STRATEGIA parla direttamente al consulente al TU («valuta», «monitora», «considera», «alleggerisci»). Mai «i consulenti potrebbero».
 - Forme condizionali per i consigli («se il segnale si conferma...», «per clienti con profilo X...»).
+
+LESSICO — OBBLIGATORIO LEGGGIBILE
+Il consulente leggerà questi testi e dovrà spesso ripeterli a clienti NON esperti di finanza. Quindi:
+- Italiano SEMPLICE, frasi brevi (max 25 parole).
+- NIENTE jargon vuoto: "fondamentali solidi", "outlook positivo", "rationale", "guidance robusta", "endorsement major player", "tesi intatta".
+- Sostituisci tecnicismi con sinonimi semplici, spiegando il termine tecnico solo al primo uso:
+  - "drawdown" → "calo dal massimo recente"
+  - "guidance" → "previsioni dell'azienda"
+  - "buyback" → "riacquisto di azioni proprie"
+  - "earnings" → "risultati trimestrali"
+  - "EPS" → "utile per azione"
+  - "P/E" → "rapporto prezzo/utili"
+  - "free cash flow" → "soldi che l'azienda genera dopo le spese"
+  - "yield" → "rendimento"
+  - "spread" → "differenza tra due rendimenti"
+- Mantieni SEMPRE i numeri precisi (ricavi, %, date, ticker).
+- Nella STRATEGIA, usa frasi pratiche e operative (cosa fare, quando, perché).
 
 CATEGORIE — Scegline UNA tra:
 - azioni: notizie su singole società quotate, earnings, M&A, IPO, partnership aziendali
@@ -118,13 +134,13 @@ OUTPUT — rispondi ESATTAMENTE in questo formato, con i 5 blocchi etichettati, 
 
 CATEGORIA: <una sola tra: azioni, macroeconomia, geopolitica, materie_prime, generica>
 
-TITOLO: <titolo italiano, max 110 caratteri, riformulato non tradotto letterale>
+TITOLO: <titolo italiano, max 110 caratteri, riformulato non tradotto letterale, in linguaggio chiaro>
 
-SOMMARIO: <riassunto 4-6 frasi (600-900 caratteri): contesto, dati chiave, attori, significato per il mercato. Stile giornalistico breve.>
+SOMMARIO: <riassunto 4-6 frasi (600-900 caratteri): contesto, dati chiave, attori, significato per il mercato. Stile giornalistico breve, accessibile.>
 
-IMPATTO: <analisi 3-4 frasi (350-550 caratteri): settori/asset coinvolti, direzione, correlazioni.>
+IMPATTO: <analisi 3-4 frasi (350-550 caratteri): settori/asset coinvolti, direzione (sale/scende), correlazioni. Spiega i collegamenti in modo chiaro.>
 
-STRATEGIA: <suggerimento operativo 3-4 frasi (350-550 caratteri) al TU al consulente. Cita ticker se rilevanti.>"""
+STRATEGIA: <suggerimento operativo 3-4 frasi (350-550 caratteri) al TU al consulente. Cita ticker se rilevanti. Cosa fare in pratica, in che ordine.>"""
 
     try:
         response = client.messages.create(
