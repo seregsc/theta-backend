@@ -172,36 +172,90 @@ Rispondi SOLO con JSON, nessun altro testo."""
         return opportunity
 
 
-def evaluate_existing(opp, current_price_data):
-    """True se ancora valida, False se obsoleta."""
-    ticker = opp["ticker"]
-    old_price = float(opp.get("current_price") or 0)
-    current = current_price_data.get(ticker)
-    if not current or not current.get("price"):
-        return False
-    new_price = current["price"]
-    if old_price > 0:
-        delta_pct = ((new_price - old_price) / old_price) * 100
-    else:
-        delta_pct = 0
-    category = opp["category"]
-    if category == "crolli" and delta_pct >= 15:
-        return False
-    if category == "sottovalutati" and delta_pct >= 12:
-        return False
-    if category == "beneficiari" and delta_pct >= 20:
-        return False
+def main():
+    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    print("[opportunities] Inizio analisi (persistenza + scadute)...")
+
+    prices_data = fetch_prices_with_history(supabase)
+    print(f"[opportunities] Caricati {len(prices_data)} ticker")
+
+    news = fetch_recent_news(supabase, hours=72, limit=30)
+    print(f"[opportunities] Caricate {len(news)} news")
+    news_lines = []
+    for n in news[:10]:
+        t = n.get("title_it") or n.get("title", "")
+        s = (n.get("summary_it") or n.get("summary", ""))[:200]
+        if t: news_lines.append(f"- {t}\n  {s}")
+    news_text = "\n".join(news_lines)
+
+    # STEP 1: pulizia scadute oltre 30 giorni (cancellazione definitiva)
+    cutoff_30d = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
     try:
-        created = opp.get("created_at")
-        if isinstance(created, str):
-            created_dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+        res = supabase.table("opportunities").delete().eq("status", "expired").lt("expired_at", cutoff_30d).execute()
+        print(f"[opportunities] Pulite scadute oltre 30gg")
+    except Exception as e:
+        print(f"  [cleanup expired error] {e}")
+
+    # STEP 2: valuta opportunità ATTIVE esistenti
+    existing = fetch_existing_opportunities(supabase)
+    active_existing = [o for o in existing if o.get("status", "active") == "active"]
+    print(f"[opportunities] Esistenti attive: {len(active_existing)}")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    to_keep = []
+    to_expire_ids = []
+    for opp in active_existing:
+        if evaluate_existing(opp, prices_data):
+            to_keep.append(opp)
         else:
-            created_dt = created
-        if created_dt and (datetime.now(timezone.utc) - created_dt).days >= 14:
-            return False
-    except Exception:
-        pass
-    return True
+            to_expire_ids.append(opp["id"])
+    print(f"[opportunities] Da mantenere attive: {len(to_keep)}, da scadere: {len(to_expire_ids)}")
+
+    # Marca come scadute (NON cancella)
+    for opp_id in to_expire_ids:
+        try:
+            supabase.table("opportunities").update({
+                "status": "expired",
+                "expired_at": now_iso,
+            }).eq("id", opp_id).execute()
+        except Exception as e:
+            print(f"  [expire error] {opp_id}: {e}")
+
+    # STEP 3: genera nuove (escludendo duplicati con esistenti ATTIVE)
+    existing_tickers_by_cat = {}
+    for opp in to_keep:
+        cat = opp["category"]
+        existing_tickers_by_cat.setdefault(cat, set()).add(opp["ticker"])
+
+    crolli = compute_crolli(prices_data, news_text=news_text, top_n=10)
+    crolli = [c for c in crolli if c["ticker"] not in existing_tickers_by_cat.get("crolli", set())]
+    print(f"[opportunities] Crolli nuovi: {len(crolli)}")
+
+    beneficiari = compute_beneficiari(news, prices_data, top_n=6)
+    beneficiari = [b for b in beneficiari if b["ticker"] not in existing_tickers_by_cat.get("beneficiari", set())]
+    print(f"[opportunities] Eventi favorevoli nuovi: {len(beneficiari)}")
+
+    sottovalutati = compute_sottovalutati(prices_data, news_text=news_text, top_n=6)
+    sottovalutati = [s for s in sottovalutati if s["ticker"] not in existing_tickers_by_cat.get("sottovalutati", set())]
+    print(f"[opportunities] Sottovalutati nuovi: {len(sottovalutati)}")
+
+    all_new = crolli + beneficiari + sottovalutati
+
+    saved = 0
+    for op in all_new:
+        try:
+            # Aggiungi esplicitamente status='active'
+            op["status"] = "active"
+            supabase.table("opportunities").insert(op).execute()
+            saved += 1
+        except Exception as e:
+            print(f"  [insert error] {op.get('ticker')}: {e}")
+
+    print(f"[opportunities] Salvate {saved} nuove.")
+    print(f"[opportunities] Totale attive in DB: {len(to_keep) + saved}.")
+
+
+if __name__ == "__main__":
+    main()
 
 
 def compute_crolli(prices_data, news_text="", top_n=10):
