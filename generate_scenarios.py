@@ -101,11 +101,27 @@ SCENARI GIÀ GENERATI IN PASSATO (non duplicare, neanche concettualmente):
 {avoid_list}
 
 REGOLE DI CREATIVITÀ
-- Esplora aree diverse: geopolitica, macroeconomia, tecnologia, energia, regulation, cisne neri, settori specifici, eventi politici.
+- Esplora aree diverse: geopolitica, macroeconomia, tecnologia, energia, regulation, cigni neri, settori specifici, eventi politici.
 - Non riciclare temi simili a quelli già fatti. Trova angoli originali.
 - Mantieni plausibilità: lo scenario deve essere realistico e ragionato, non assurdo.
-- Italiano professionale, lessico finanziario.
 - Lo scenario non è una previsione live: è un esercizio mentale di preparazione per il consulente.
+
+LESSICO — OBBLIGATORIO LEGGIBILE
+Il consulente leggerà questi scenari e li userà spesso per spiegare ai clienti NON esperti cosa potrebbe succedere. Quindi:
+- Italiano SEMPLICE, frasi brevi (max 25 parole).
+- NIENTE jargon vuoto: "fondamentali solidi", "outlook deteriorato", "rationale", "guidance", "tesi compromessa".
+- Sostituisci tecnicismi con sinonimi semplici:
+  - "drawdown" → "calo dai massimi"
+  - "spread" → "differenza tra rendimenti"
+  - "bps" (basis points) → "punti percentuali (un bps = 0,01%)"
+  - "VIX" → "indice della paura (VIX)"
+  - "hedge" → "protezione/copertura"
+  - "duration" → "durata media dell'obbligazione"
+  - "yield" → "rendimento"
+- Mantieni SEMPRE i numeri precisi (% variazioni, ticker, prezzi target).
+- Nella DESCRIZIONE racconta la storia come la racconteresti a un cliente: "succede X, poi Y, poi Z".
+- Negli IMPATTI usa frasi pratiche tipo "petrolio sale del 30-50%" non "shock energetico negativo".
+- Nella HEDGE_STRATEGY parla al TU al consulente con verbi concreti: «valuta», «considera», «alleggerisci», «monitora».
 
 OUTPUT — rispondi SOLO con JSON puro, un singolo oggetto, senza markdown:
 
@@ -115,8 +131,8 @@ OUTPUT — rispondi SOLO con JSON puro, un singolo oggetto, senza markdown:
   "probability": "Bassa (15%) | Media (35%) | Alta (60%)",
   "severity": "Lieve | Media | Severa | Critica",
   "time_horizon": "1-3 mesi | 3-6 mesi | 6-12 mesi | 12-24 mesi",
-  "description": "Descrizione 5-7 frasi (700-1000 caratteri) che spiega cosa potrebbe accadere, perché è plausibile, quale catena di eventi porterebbe a questo scenario.",
-  "trigger_events": ["Evento trigger 1", "Evento trigger 2", "Evento trigger 3", "Evento trigger 4"],
+  "description": "Descrizione 5-7 frasi (700-1000 caratteri) IN ITALIANO SEMPLICE che racconta la storia: cosa potrebbe accadere, perché è plausibile, quale catena di eventi porterebbe a questo scenario. Come lo racconteresti a un cliente al telefono.",
+  "trigger_events": ["Evento trigger 1 (in parole semplici)", "Evento trigger 2", "Evento trigger 3", "Evento trigger 4"],
   "market_impact": {{
     "equity_global": "+5% / -15% / etc",
     "equity_emerging": "+/-X%",
@@ -127,15 +143,15 @@ OUTPUT — rispondi SOLO con JSON puro, un singolo oggetto, senza markdown:
     "vix": "valore stimato"
   }},
   "winners": [
-    {{"ticker": "XOM", "name": "ExxonMobil", "expected_move": "+15-25%", "why": "Spiegazione breve 1-2 frasi sul perché beneficia"}},
+    {{"ticker": "XOM", "name": "ExxonMobil", "expected_move": "+15-25%", "why": "Spiegazione breve 1-2 frasi in italiano semplice sul perché beneficia"}},
     {{"ticker": "GLD", "name": "SPDR Gold", "expected_move": "+10-18%", "why": "..."}}
   ],
   "losers": [
     {{"ticker": "QQQ", "name": "Invesco QQQ", "expected_move": "-20/-30%", "why": "..."}},
     {{"ticker": "EZA", "name": "iShares South Africa", "expected_move": "-25/-35%", "why": "..."}}
   ],
-  "hedge_strategy": "Strategia di copertura 3-4 frasi (300-500 caratteri) al TU al consulente: «valuta...», «considera...», «monitora...».",
-  "early_warning": ["Segnale precoce 1", "Segnale precoce 2", "Segnale precoce 3"]
+  "hedge_strategy": "Strategia di copertura 3-4 frasi (300-500 caratteri) al TU al consulente, in italiano semplice: «valuta...», «considera...», «monitora...». Cosa fare in pratica per proteggere il portafoglio.",
+  "early_warning": ["Segnale precoce 1 in parole semplici", "Segnale precoce 2", "Segnale precoce 3"]
 }}
 
 Genera un solo scenario, originale, non simile a nessuno dei precedenti."""
@@ -210,4 +226,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
