@@ -1,39 +1,3 @@
-def get_tickers_to_fetch(supabase):
-    """Combina ticker hardcoded + tutti gli ETF attivi dal catalogo + ticker da holdings clienti reali."""
-    
-    # 1. Ticker hardcoded (compatibilità con setup attuale)
-    HARDCODED_TICKERS = [
-        "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA",
-        # ... resto della tua lista esistente
-    ]
-    
-    tickers = set(HARDCODED_TICKERS)
-    
-    # 2. ETF dal catalogo (attivi)
-    try:
-        res = supabase.table("etf_catalog").select("ticker").eq("active", True).execute()
-        for row in res.data or []:
-            tickers.add(row["ticker"])
-    except Exception as e:
-        print(f"  etf_catalog fetch error: {e}")
-    
-    # 3. Ticker effettivamente detenuti dai clienti (anche se non in catalogo)
-    try:
-        res = supabase.table("holdings").select("ticker").execute()
-        for row in res.data or []:
-            tickers.add(row["ticker"])
-    except Exception as e:
-        print(f"  holdings fetch error: {e}")
-    
-    return sorted(tickers)
-
-
-# Nella main():
-# tickers = get_tickers_to_fetch(supabase)
-# print(f"Fetcho prezzi per {len(tickers)} ticker totali")
-
-
-
 import os
 import yfinance as yf
 from supabase import create_client
@@ -42,6 +6,10 @@ from datetime import datetime, timezone, date
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
+# Ticker hardcoded di base (compatibilità con setup attuale).
+# Ai ticker qui sotto vengono aggiunti dinamicamente:
+#  - tutti gli ETF dal catalogo Supabase (etf_catalog)
+#  - tutti i ticker effettivamente detenuti dai clienti (holdings)
 ALL_TICKERS = [
     "1211.HK", "ABBV", "ACWI.MI", "ADYEN.AS", "AEM", "AFRM", "AGG", "AI4U.MI", "AMD", "AMGN",
     "AMT", "AMZN", "ANET", "ANTO.L", "ASML", "AVGO", "AZN.L", "BA.L", "BABA", "BAC",
@@ -75,6 +43,45 @@ YF_ALIAS = {
     "BTPM.MI": "IEAC.MI",
     "RR.": "RR.L",
 }
+
+
+def get_all_tickers(supabase):
+    """Compone la lista finale dei ticker da scaricare unendo:
+      - ALL_TICKERS hardcoded
+      - tutti i ticker da etf_catalog (attivi)
+      - tutti i ticker effettivamente in holdings dei clienti
+    Restituisce la lista deduplicata e ordinata.
+    """
+    tickers = set(ALL_TICKERS)
+    initial_count = len(tickers)
+
+    # 1) ETF catalog (tutti gli ETF Fineco)
+    try:
+        res = supabase.table("etf_catalog").select("ticker").eq("active", True).execute()
+        rows = res.data or []
+        etf_tickers = [r["ticker"] for r in rows if r.get("ticker")]
+        before = len(tickers)
+        tickers.update(etf_tickers)
+        added = len(tickers) - before
+        print(f"[get_all_tickers] etf_catalog: {len(etf_tickers)} ticker letti, {added} nuovi aggiunti.")
+    except Exception as e:
+        print(f"[get_all_tickers] errore etf_catalog: {e}")
+
+    # 2) Ticker effettivamente in holdings dei clienti
+    try:
+        res = supabase.table("holdings").select("ticker").execute()
+        rows = res.data or []
+        holding_tickers = [r["ticker"] for r in rows if r.get("ticker")]
+        before = len(tickers)
+        tickers.update(holding_tickers)
+        added = len(tickers) - before
+        print(f"[get_all_tickers] holdings: {len(holding_tickers)} record letti, {added} nuovi ticker aggiunti.")
+    except Exception as e:
+        print(f"[get_all_tickers] errore holdings: {e}")
+
+    final_list = sorted(tickers)
+    print(f"[get_all_tickers] hardcoded {initial_count} + dinamici {len(final_list) - initial_count} = TOTALE {len(final_list)} ticker.")
+    return final_list
 
 
 def fetch_price_yf(ticker_original):
@@ -117,7 +124,11 @@ def fetch_price_yf(ticker_original):
 
 def main():
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-    print(f"[update_prices] {len(ALL_TICKERS)} ticker da aggiornare...")
+
+    # Composizione lista ticker dinamica
+    tickers_to_fetch = get_all_tickers(supabase)
+    print(f"[update_prices] {len(tickers_to_fetch)} ticker da aggiornare...")
+
     now_iso = datetime.now(timezone.utc).isoformat()
     today_str = date.today().isoformat()  # YYYY-MM-DD
 
@@ -125,13 +136,15 @@ def main():
     updated_prices_count = 0
     saved_history_count = 0
     failed_count = 0
+    failed_tickers = []
 
-    for i, ticker in enumerate(ALL_TICKERS, 1):
-        print(f"  [{i}/{len(ALL_TICKERS)}] {ticker}...", end=" ", flush=True)
+    for i, ticker in enumerate(tickers_to_fetch, 1):
+        print(f"  [{i}/{len(tickers_to_fetch)}] {ticker}...", end=" ", flush=True)
         price, change_pct, currency = fetch_price_yf(ticker)
         if price is None:
             print("FAIL")
             failed_count += 1
+            failed_tickers.append(ticker)
             continue
         prices_data[ticker] = price
         ch_str = f"({change_pct:+.2f}%)" if change_pct is not None else ""
@@ -163,9 +176,14 @@ def main():
         except Exception as e:
             print(f"    [history save error] {e}")
 
-    print(f"\n[update_prices] Aggiornati {updated_prices_count}/{len(ALL_TICKERS)} prezzi.")
+    print(f"\n[update_prices] Aggiornati {updated_prices_count}/{len(tickers_to_fetch)} prezzi.")
     print(f"[update_prices] Salvati {saved_history_count} record in prices_history.")
     print(f"[update_prices] {failed_count} FAIL.")
+    if failed_tickers:
+        # Stampa max i primi 30 per non intasare il log
+        preview = failed_tickers[:30]
+        suffix = "" if len(failed_tickers) <= 30 else f" (+ altri {len(failed_tickers) - 30})"
+        print(f"[update_prices] Ticker falliti: {', '.join(preview)}{suffix}")
 
     # 3. Aggiorna current_value degli holdings
     try:
@@ -194,3 +212,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
