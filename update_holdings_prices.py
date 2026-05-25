@@ -1,13 +1,11 @@
 import os
 import yfinance as yf
 from supabase import create_client
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
-# Lista completa ticker disponibili in Theta (da SECTOR_ASSETS del frontend)
-# Quando aggiungi nuovi asset al frontend, aggiungili anche qui.
 ALL_TICKERS = [
     "1211.HK", "ABBV", "ACWI.MI", "ADYEN.AS", "AEM", "AFRM", "AGG", "AI4U.MI", "AMD", "AMGN",
     "AMT", "AMZN", "ANET", "ANTO.L", "ASML", "AVGO", "AZN.L", "BA.L", "BABA", "BAC",
@@ -32,15 +30,14 @@ ALL_TICKERS = [
     "WPM", "WTIO.MI", "XAUUSD", "XEON.MI", "XLU", "XMME.MI", "XOM", "XOP",
 ]
 
-# Alias: alcuni ticker hanno un formato diverso su Yahoo Finance
 YF_ALIAS = {
     "BTC": "BTC-USD",
     "ETH": "ETH-USD",
     "SOL": "SOL-USD",
-    "XAUUSD": "XAUUSD=X",   # oro spot forex (più accurato del futures)
-    "BTPM": "IEAC.MI",      # ETF BTP proxy
+    "XAUUSD": "XAUUSD=X",
+    "BTPM": "IEAC.MI",
     "BTPM.MI": "IEAC.MI",
-    "RR.": "RR.L",          # Rolls-Royce su LSE
+    "RR.": "RR.L",
 }
 
 
@@ -50,7 +47,6 @@ def fetch_price_yf(ticker_original):
     yf_ticker = YF_ALIAS.get(ticker_original, ticker_original)
     try:
         t = yf.Ticker(yf_ticker)
-        # Tentativo 1: fast_info (più rapido, ha già anche prev_close)
         try:
             fi = t.fast_info
             price = fi.get("last_price")
@@ -63,7 +59,6 @@ def fetch_price_yf(ticker_original):
                 return float(price), change_pct, currency
         except Exception:
             pass
-        # Tentativo 2: history degli ultimi 5 giorni
         hist = t.history(period="5d")
         if len(hist) >= 1:
             price = float(hist["Close"].iloc[-1])
@@ -88,12 +83,13 @@ def main():
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
     print(f"[update_prices] {len(ALL_TICKERS)} ticker da aggiornare...")
     now_iso = datetime.now(timezone.utc).isoformat()
+    today_str = date.today().isoformat()  # YYYY-MM-DD
 
     prices_data = {}
     updated_prices_count = 0
+    saved_history_count = 0
     failed_count = 0
 
-    # Recupera prezzi e salva su tabella prices
     for i, ticker in enumerate(ALL_TICKERS, 1):
         print(f"  [{i}/{len(ALL_TICKERS)}] {ticker}...", end=" ", flush=True)
         price, change_pct, currency = fetch_price_yf(ticker)
@@ -105,7 +101,7 @@ def main():
         ch_str = f"({change_pct:+.2f}%)" if change_pct is not None else ""
         print(f"{currency} {price:.2f} {ch_str}")
 
-        # Upsert in tabella prices (richiede UNIQUE su ticker)
+        # 1. Upsert in tabella prices (snapshot ultimo prezzo)
         try:
             supabase.table("prices").upsert({
                 "ticker": ticker,
@@ -119,9 +115,23 @@ def main():
         except Exception as e:
             print(f"    [prices save error] {e}")
 
-    print(f"\n[update_prices] Aggiornati {updated_prices_count}/{len(ALL_TICKERS)} prezzi ({failed_count} FAIL).")
+        # 2. Upsert in tabella prices_history (1 record per (ticker, giorno))
+        try:
+            supabase.table("prices_history").upsert({
+                "ticker": ticker,
+                "date": today_str,
+                "price": price,
+                "currency": currency,
+            }, on_conflict="ticker,date").execute()
+            saved_history_count += 1
+        except Exception as e:
+            print(f"    [history save error] {e}")
 
-    # Aggiorna anche current_value degli holdings esistenti
+    print(f"\n[update_prices] Aggiornati {updated_prices_count}/{len(ALL_TICKERS)} prezzi.")
+    print(f"[update_prices] Salvati {saved_history_count} record in prices_history.")
+    print(f"[update_prices] {failed_count} FAIL.")
+
+    # 3. Aggiorna current_value degli holdings
     try:
         res = supabase.table("holdings").select("id, ticker, quantity").execute()
         holdings = res.data or []
