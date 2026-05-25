@@ -1,0 +1,23 @@
+name: Generate Scenario Impacts (daily)
+
+on:
+  schedule:
+    # Ogni giorno alle 7:30 UTC = 8:30 IT (dopo che generate_scenarios alle 7:00 ha già finito)
+    - cron: '30 7 * * *'
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install supabase anthropic
+      - env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python generate_scenario_impacts.py
