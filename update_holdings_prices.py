@@ -37,7 +37,7 @@ YF_ALIAS = {
     "BTC": "BTC-USD",
     "ETH": "ETH-USD",
     "SOL": "SOL-USD",
-    "XAUUSD": "GC=F",       # oro futures su Yahoo
+    "XAUUSD": "XAUUSD=X",   # oro spot forex (più accurato del futures)
     "BTPM": "IEAC.MI",      # ETF BTP proxy
     "BTPM.MI": "IEAC.MI",
     "RR.": "RR.L",          # Rolls-Royce su LSE
