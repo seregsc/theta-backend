@@ -1,10 +1,8 @@
 """
 generate_ipos.py
-Pesca IPO da Finnhub + arricchimento AI Claude.
+Pesca IPO da Finnhub + arricchimento AI Claude (con timeline roadshow).
 Salva su ipos_live (UPSERT su ticker+ipo_date).
 Settimanale via GitHub Actions.
-
-Versione con flush immediato + timeout robusti per debugging GitHub Actions.
 """
 
 import os
@@ -16,7 +14,6 @@ from datetime import datetime, timedelta, timezone, date
 from supabase import create_client
 import anthropic
 
-# Forza unbuffered output: ogni print() appare subito nei log GitHub
 print("[boot] generate_ipos.py avvio", flush=True)
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -33,15 +30,12 @@ MODEL = "claude-sonnet-4-5"
 
 DAYS_BACK = 30
 DAYS_FORWARD = 180
-MAX_IPOS_TO_ENRICH = 15  # ridotto da 30 per velocità
-
-# Timeout
+MAX_IPOS_TO_ENRICH = 15
 HTTP_TIMEOUT = 20
 AI_TIMEOUT = 60
 
 
 def fetch_finnhub_ipos():
-    """Pesca IPO calendar da Finnhub (free tier 60 req/min)."""
     today = date.today()
     date_from = (today - timedelta(days=DAYS_BACK)).isoformat()
     date_to = (today + timedelta(days=DAYS_FORWARD)).isoformat()
@@ -75,7 +69,6 @@ def fetch_finnhub_ipos():
 
 
 def normalize_finnhub_ipo(item):
-    """Normalizza schema Finnhub: { date, exchange, name, numberOfShares, price, status, symbol, totalSharesValue }"""
     symbol = (item.get("symbol") or "").strip()
     name = (item.get("name") or "").strip()
     exchange = (item.get("exchange") or "").strip()
@@ -195,7 +188,8 @@ def parse_json(text):
 
 
 def enrich_ipo_with_ai(anthropic_client, ipo_basic):
-    prompt = f"""Sei un equity research analyst senior italiano. Devi arricchire i dati grezzi di un'IPO con un'analisi finanziaria approfondita per un consulente Fineco italiano.
+    """Arricchimento completo con analisi finanziaria + timeline roadshow."""
+    prompt = f"""Sei un equity research analyst senior italiano. Devi arricchire un'IPO con analisi finanziaria + TIMELINE ROADSHOW per un consulente Fineco italiano.
 
 ═══════════════════════════════════
 DATI GREZZI DELL'IPO
@@ -208,23 +202,40 @@ Data IPO: {ipo_basic.get('expected_date', 'TBD')}
 Range prezzo: {ipo_basic.get('price_range', '—')}
 Status: {ipo_basic.get('status', '—')}
 Azioni offerte: {ipo_basic.get('shares_offered', '—')}
-Market Cap stimato: {ipo_basic.get('market_cap_estimate', '—')}
 
 ═══════════════════════════════════
 ISTRUZIONI
 ═══════════════════════════════════
-Genera un'analisi completa basandoti sulla tua conoscenza dell'azienda e del settore.
-
-Se NON CONOSCI questa azienda (micro-cap, SPAC, società minore), restituisci comunque un'analisi basata sul nome/settore/exchange con disclaimer chiaro nella thesis. NON inventare dati finanziari precisi.
+Se NON CONOSCI l'azienda (micro-cap, SPAC, società minore), restituisci comunque un'analisi basata sul nome/settore/exchange con disclaimer chiaro nella thesis. NON inventare dati finanziari precisi.
 
 Settori (slug interno): ai, semis, defense, nuclear, biotech, fintech, luxury, auto, energy, utilities, consumer, industrials, telecom, reits, emerging, gold, copper, crypto, health, real_estate, other.
 
 Profili (suited_for): conservative, balanced, growth, aggressive.
 
+═══════════════════════════════════
+TIMELINE ROADSHOW — IMPORTANTE
+═══════════════════════════════════
+Genera 5-7 milestone storiche e future:
+- 2-3 milestone PASSATE (status: "done") - es. round funding precedenti, breakeven, S-1 filing iniziale
+- 1 milestone CORRENTE (status: "active") - cosa sta succedendo ora (es. roadshow, pricing, filing recente)
+- 2-3 milestone FUTURE (status: "pending") - listing day, lock-up scadenza, prima trimestrale
+
+Date in italiano abbreviate: "Gen 2024", "Q2 2026", "H2 2026", "Mag 2024", ecc.
+
+Esempio timeline per Stripe:
+[
+  {{"date":"Feb 2024","title":"Tender offer secondary $70B","note":"Tender per liquidità dipendenti. Conferma valuation mercato","status":"done"}},
+  {{"date":"2024-2025","title":"Preparazione interna","note":"Audit Sarbanes-Oxley, governance, separazione subsidiary","status":"done"}},
+  {{"date":"Q2 2026","title":"Filing confidential SEC","note":"Rumor: depositato. Underwriters Goldman, JPMorgan, MS","status":"active"}},
+  {{"date":"H2 2026","title":"Pubblicazione S-1","note":"Disclosure finanziari completi. Roadshow USA + EU + Asia","status":"pending"}},
+  {{"date":"Fine 2026","title":"Pricing target NYSE","note":"Range $48-56. Dimensione $5-7B (largest IPO 2026)","status":"pending"}},
+  {{"date":"2027","title":"Lock-up & insider sales","note":"Sequoia, Founders Fund potranno liquidare. Volume enorme","status":"pending"}}
+]
+
 NIENTE jargon vuoto. Lessico semplice. Frasi brevi.
 
 ═══════════════════════════════════
-FORMATO OUTPUT (SOLO JSON)
+FORMATO OUTPUT (SOLO JSON, NESSUN TESTO PRIMA O DOPO)
 ═══════════════════════════════════
 {{
   "sector": "AI Infrastructure",
@@ -232,13 +243,21 @@ FORMATO OUTPUT (SOLO JSON)
   "headline": "Prima IPO pura-play AI cloud (max 70 caratteri)",
   "summary": "1-2 frasi cosa fa l'azienda",
   "business": "2-3 frasi modello di business",
-  "thesis": "4-6 frasi sulla tesi di investimento con rischi e opportunità.",
+  "thesis": "4-6 frasi tesi con rischi e opportunità",
   "pros": ["Punto 1", "Punto 2", "Punto 3"],
   "cons": ["Rischio 1", "Rischio 2", "Rischio 3"],
   "catalysts": ["Catalyst 1", "Catalyst 2"],
   "competitors": ["Concorrente 1", "Concorrente 2"],
   "comparables": [
     {{"name":"Snowflake","ticker":"SNOW","ipo_date":"Set 2020","ipo_price":"$120","perf_first_day":"+111%","perf_1y":"+38%","note":"Comparable settoriale"}}
+  ],
+  "timeline": [
+    {{"date":"Mag 2024","title":"Series C $1B","note":"Round guidato da SoftBank","status":"done"}},
+    {{"date":"Q1 2026","title":"S-1 filing","note":"Documenti SEC depositati","status":"done"}},
+    {{"date":"Q2 2026","title":"Roadshow investitori","note":"Presentazioni a fondi USA e EU","status":"active"}},
+    {{"date":"Q3 2026","title":"Pricing & listing","note":"Prezzo finale, primo giorno trading","status":"pending"}},
+    {{"date":"Q4 2026","title":"Lock-up insider (180 giorni)","note":"Insider non possono vendere","status":"pending"}},
+    {{"date":"Q2 2027","title":"Prima trimestrale public","note":"Test execution revenue guidance","status":"pending"}}
   ],
   "use_of_proceeds": "Come useranno il capitale",
   "founders": ["Nome Cognome (CEO)"],
@@ -249,7 +268,7 @@ FORMATO OUTPUT (SOLO JSON)
   "ebitda_margin": "31%",
   "debt_eq": "1.8x",
   "valuation_method": "EV/Revenue 15x su run-rate $2.3B",
-  "last_round": "$23B",
+  "last_round": "$23B (Mag 2024, Coatue)",
   "score": 88,
   "upside": "+52%",
   "risk": "MED",
@@ -260,12 +279,13 @@ FORMATO OUTPUT (SOLO JSON)
   "suited_for": ["growth", "aggressive"]
 }}
 
-Se non conosci dati precisi, usa "—" o null. Score 0-100. Rating BUY/HOLD/AVOID. Risk LOW/MED/HIGH."""
+Se non conosci dati precisi, usa "—" o null. Score 0-100. Rating BUY/HOLD/AVOID. Risk LOW/MED/HIGH.
+La timeline DEVE avere almeno 5 milestone con almeno 1 active e 2 done."""
 
     try:
         response = anthropic_client.messages.create(
             model=MODEL,
-            max_tokens=2500,
+            max_tokens=3000,
             messages=[{"role": "user", "content": prompt}],
             timeout=AI_TIMEOUT,
         )
@@ -280,6 +300,7 @@ def merge_ipo(basic, enriched):
     if enriched:
         for key in ["sector", "category", "headline", "summary", "business", "thesis",
                     "pros", "cons", "catalysts", "competitors", "comparables",
+                    "timeline",
                     "use_of_proceeds", "founders", "employees", "founded",
                     "revenue_growth", "gross_margin", "ebitda_margin", "debt_eq",
                     "valuation_method", "last_round", "score", "upside", "risk",
@@ -293,7 +314,7 @@ def merge_ipo(basic, enriched):
 def save_ipo(supabase, row):
     try:
         for k in ["pros", "cons", "catalysts", "competitors", "comparables", "founders",
-                  "lead_underwriters", "suited_for", "raw_data"]:
+                  "lead_underwriters", "suited_for", "raw_data", "timeline"]:
             if k in row and row[k] is not None and not isinstance(row[k], (list, dict)):
                 row[k] = None
         clean = {k: v for k, v in row.items() if v is not None}
@@ -401,6 +422,8 @@ def main():
             row["enriched_at"] = None
         else:
             row = merge_ipo(basic, enriched)
+            timeline_count = len(enriched.get("timeline") or [])
+            print(f"    timeline: {timeline_count} milestone", flush=True)
 
         if save_ipo(supabase, row):
             success += 1
