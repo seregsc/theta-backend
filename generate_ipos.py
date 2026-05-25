@@ -1,8 +1,8 @@
 """
 generate_ipos.py
 Pesca le IPO upcoming dai prossimi 6 mesi e quelle recenti (ultimi 30 giorni)
-da Financial Modeling Prep, e usa Claude per arricchire ognuna con analisi
-finanziaria (tesi, pros, cons, target, valuation, ecc.).
+da Financial Modeling Prep (endpoint stable), e usa Claude per arricchire ognuna
+con analisi finanziaria (tesi, pros, cons, target, valuation, ecc.).
 
 Salva su ipos_live (UPSERT su ticker+ipo_date).
 Da eseguire settimanalmente via GitHub Actions.
@@ -33,36 +33,49 @@ MAX_IPOS_TO_ENRICH = 30
 
 
 def fetch_fmp_ipos():
-    """Pesca IPO calendar da FMP (free tier, 250 calls/day)"""
+    """Pesca IPO calendar da FMP usando l'endpoint stable (free tier 250 calls/day).
+    L'endpoint v3 legacy è dismesso da agosto 2025."""
     today = date.today()
     date_from = (today - timedelta(days=DAYS_BACK)).isoformat()
     date_to = (today + timedelta(days=DAYS_FORWARD)).isoformat()
-    url = f"https://financialmodelingprep.com/api/v3/ipo_calendar?from={date_from}&to={date_to}&apikey={FMP_API_KEY}"
+    url = f"https://financialmodelingprep.com/stable/ipos-calendar?from={date_from}&to={date_to}&apikey={FMP_API_KEY}"
     try:
         r = requests.get(url, timeout=30)
         if r.status_code != 200:
-            print(f"[FMP] errore HTTP {r.status_code}: {r.text[:200]}")
+            print(f"[FMP] errore HTTP {r.status_code}: {r.text[:300]}")
             return []
         data = r.json()
-        if isinstance(data, dict) and data.get("Error Message"):
-            print(f"[FMP] errore API: {data['Error Message']}")
+        if isinstance(data, dict):
+            if data.get("Error Message"):
+                print(f"[FMP] errore API: {data['Error Message']}")
+                return []
+            # Lo stable endpoint a volte wrappa la lista in {data: [...]}
+            if "data" in data and isinstance(data["data"], list):
+                return data["data"]
+            print(f"[FMP] formato inatteso (dict senza 'data'): {list(data.keys())[:5]}")
             return []
-        return data or []
+        if isinstance(data, list):
+            return data
+        print(f"[FMP] formato inatteso: {type(data)}")
+        return []
     except Exception as e:
         print(f"[FMP] errore connessione: {e}")
         return []
 
 
 def normalize_fmp_ipo(item):
-    """Normalizza un record FMP nel nostro schema."""
-    symbol = (item.get("symbol") or "").strip()
-    name = (item.get("company") or "").strip()
-    exchange = (item.get("exchange") or "").strip()
-    ipo_date_str = (item.get("date") or "").strip()
-    price_range = (item.get("priceRange") or "").strip()
-    shares = item.get("shares")
-    market_cap = item.get("marketCap")
-    actions = (item.get("actions") or "").lower()
+    """Normalizza un record FMP nel nostro schema.
+    Robusto a piccole variazioni di field naming tra v3 legacy e stable."""
+    # Possibili nomi per ticker
+    symbol = (item.get("symbol") or item.get("symbolListed") or item.get("ticker") or "").strip()
+    # Possibili nomi per nome azienda
+    name = (item.get("company") or item.get("companyName") or item.get("name") or "").strip()
+    exchange = (item.get("exchange") or item.get("exchangeShortName") or "").strip()
+    ipo_date_str = (item.get("date") or item.get("ipoDate") or "").strip()
+    price_range = (item.get("priceRange") or item.get("price_range") or "").strip()
+    shares = item.get("shares") or item.get("sharesOffered")
+    market_cap = item.get("marketCap") or item.get("marketCapitalization")
+    actions = (item.get("actions") or item.get("action") or "").lower()
 
     # Determina status
     today = date.today()
@@ -92,10 +105,11 @@ def normalize_fmp_ipo(item):
         "TSX": "Canada", "TO": "Canada",
     }
     geo = "USA"
-    for k, v in geo_map.items():
-        if k in exchange.upper():
-            geo = v
-            break
+    if exchange:
+        for k, v in geo_map.items():
+            if k in exchange.upper():
+                geo = v
+                break
 
     expected_date_label = ipo_d.strftime("%d %b %Y") if ipo_d else "TBD"
 
@@ -253,16 +267,13 @@ def merge_ipo(basic, enriched):
 def save_ipo(supabase, row):
     """UPSERT su (ticker, ipo_date)"""
     try:
-        # Converti raw_data e jsonb fields a JSON serializzabili
+        # Sanitizza campi JSONB: devono essere list o dict, altrimenti None
         for k in ["pros", "cons", "catalysts", "competitors", "comparables", "founders",
                   "lead_underwriters", "suited_for", "raw_data"]:
             if k in row and row[k] is not None and not isinstance(row[k], (list, dict)):
                 row[k] = None
-        # Rimuovi campi None opzionali per essere robusti
+        # Rimuovi campi None opzionali
         clean = {k: v for k, v in row.items() if v is not None}
-        # NULL ipo_date diventa "1970-01-01" per la UNIQUE constraint
-        if "ipo_date" not in clean:
-            clean["ipo_date"] = None
         clean["updated_at"] = datetime.now(timezone.utc).isoformat()
         supabase.table("ipos_live").upsert(clean, on_conflict="ticker,ipo_date").execute()
         return True
@@ -275,7 +286,7 @@ def cleanup_old_ipos(supabase):
     """Rimuove IPO troppo vecchie (oltre 90 giorni nel passato)."""
     cutoff = (date.today() - timedelta(days=90)).isoformat()
     try:
-        res = supabase.table("ipos_live").delete().lt("ipo_date", cutoff).execute()
+        supabase.table("ipos_live").delete().lt("ipo_date", cutoff).execute()
         print(f"[cleanup] vecchie IPO rimosse")
     except Exception as e:
         print(f"[cleanup error] {e}")
@@ -296,6 +307,10 @@ def main():
     if not raw_ipos:
         print("[ipos] Nessun record. Termino.")
         return
+
+    # DEBUG: stampa un campione per capire lo schema della response
+    if raw_ipos:
+        print(f"[ipos] DEBUG primo record: keys = {list(raw_ipos[0].keys())[:15]}")
 
     # Normalizza
     normalized = []
