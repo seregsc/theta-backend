@@ -2,7 +2,7 @@ name: Generate Opportunities
 
 on:
   schedule:
-    - cron: '15 8,14,20 * * *'   # 3 volte al giorno: 9:15, 15:15, 21:15 IT
+    - cron: '15 8,17 * * *'   # 2 volte al giorno: 9:15 e 18:15 IT
   workflow_dispatch:
 
 jobs:
