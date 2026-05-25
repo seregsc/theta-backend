@@ -1,11 +1,14 @@
 """
 generate_ipos.py
 Pesca le IPO upcoming dai prossimi 6 mesi e quelle recenti (ultimi 30 giorni)
-da Financial Modeling Prep (endpoint stable), e usa Claude per arricchire ognuna
-con analisi finanziaria (tesi, pros, cons, target, valuation, ecc.).
+da Finnhub (endpoint gratuito), e usa Claude per arricchire ognuna con analisi
+finanziaria (tesi, pros, cons, target, valuation, ecc.).
 
 Salva su ipos_live (UPSERT su ticker+ipo_date).
 Da eseguire settimanalmente via GitHub Actions.
+
+Finnhub free tier: 60 req/min, IPO calendar gratis.
+Coverage principalmente USA. Per IPO EU/Asia ci sono pochi record.
 """
 
 import os
@@ -19,7 +22,7 @@ import anthropic
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-FMP_API_KEY = os.environ.get("FMP_API_KEY")
+FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY")
 
 MODEL = "claude-sonnet-4-5"
 
@@ -27,64 +30,64 @@ MODEL = "claude-sonnet-4-5"
 DAYS_BACK = 30
 DAYS_FORWARD = 180
 
-# Numero massimo di IPO da arricchire (per non sprecare token AI)
-# Le più interessanti vengono filtrate per offer size / market cap
+# Numero massimo di IPO da arricchire con AI (per non sprecare token)
 MAX_IPOS_TO_ENRICH = 30
 
 
-def fetch_fmp_ipos():
-    """Pesca IPO calendar da FMP usando l'endpoint stable (free tier 250 calls/day).
-    L'endpoint v3 legacy è dismesso da agosto 2025."""
+def fetch_finnhub_ipos():
+    """Pesca IPO calendar da Finnhub (free tier 60 req/min).
+    Endpoint: /calendar/ipo
+    Coverage: USA principalmente, qualche internazionale."""
     today = date.today()
     date_from = (today - timedelta(days=DAYS_BACK)).isoformat()
     date_to = (today + timedelta(days=DAYS_FORWARD)).isoformat()
-    url = f"https://financialmodelingprep.com/stable/ipos-calendar?from={date_from}&to={date_to}&apikey={FMP_API_KEY}"
+    url = f"https://finnhub.io/api/v1/calendar/ipo?from={date_from}&to={date_to}&token={FINNHUB_API_KEY}"
     try:
         r = requests.get(url, timeout=30)
         if r.status_code != 200:
-            print(f"[FMP] errore HTTP {r.status_code}: {r.text[:300]}")
+            print(f"[Finnhub] errore HTTP {r.status_code}: {r.text[:300]}")
             return []
         data = r.json()
         if isinstance(data, dict):
-            if data.get("Error Message"):
-                print(f"[FMP] errore API: {data['Error Message']}")
+            if "ipoCalendar" in data and isinstance(data["ipoCalendar"], list):
+                return data["ipoCalendar"]
+            if data.get("error"):
+                print(f"[Finnhub] errore API: {data['error']}")
                 return []
-            # Lo stable endpoint a volte wrappa la lista in {data: [...]}
-            if "data" in data and isinstance(data["data"], list):
-                return data["data"]
-            print(f"[FMP] formato inatteso (dict senza 'data'): {list(data.keys())[:5]}")
+            print(f"[Finnhub] formato inatteso (dict): {list(data.keys())[:5]}")
             return []
         if isinstance(data, list):
             return data
-        print(f"[FMP] formato inatteso: {type(data)}")
+        print(f"[Finnhub] formato inatteso: {type(data)}")
         return []
     except Exception as e:
-        print(f"[FMP] errore connessione: {e}")
+        print(f"[Finnhub] errore connessione: {e}")
         return []
 
 
-def normalize_fmp_ipo(item):
-    """Normalizza un record FMP nel nostro schema.
-    Robusto a piccole variazioni di field naming tra v3 legacy e stable."""
-    # Possibili nomi per ticker
-    symbol = (item.get("symbol") or item.get("symbolListed") or item.get("ticker") or "").strip()
-    # Possibili nomi per nome azienda
-    name = (item.get("company") or item.get("companyName") or item.get("name") or "").strip()
-    exchange = (item.get("exchange") or item.get("exchangeShortName") or "").strip()
-    ipo_date_str = (item.get("date") or item.get("ipoDate") or "").strip()
-    price_range = (item.get("priceRange") or item.get("price_range") or "").strip()
-    shares = item.get("shares") or item.get("sharesOffered")
-    market_cap = item.get("marketCap") or item.get("marketCapitalization")
-    actions = (item.get("actions") or item.get("action") or "").lower()
+def normalize_finnhub_ipo(item):
+    """Normalizza un record Finnhub nel nostro schema.
+    Schema Finnhub: { date, exchange, name, numberOfShares, price, status, symbol, totalSharesValue }"""
+    symbol = (item.get("symbol") or "").strip()
+    name = (item.get("name") or "").strip()
+    exchange = (item.get("exchange") or "").strip()
+    ipo_date_str = (item.get("date") or "").strip()
+    price_field = (item.get("price") or "").strip()  # es. "16-18" oppure "20"
+    shares = item.get("numberOfShares")
+    total_value = item.get("totalSharesValue")
+    fh_status = (item.get("status") or "").lower()
 
-    # Determina status
+    # Determina status finale
     today = date.today()
     try:
         ipo_d = datetime.fromisoformat(ipo_date_str).date()
     except Exception:
         ipo_d = None
 
-    if "priced" in actions:
+    # Finnhub status values: expected, priced, withdrawn, filed
+    if "withdrawn" in fh_status:
+        status = "withdrawn"
+    elif "priced" in fh_status:
         status = "priced"
     elif ipo_d:
         if ipo_d < today:
@@ -96,22 +99,49 @@ def normalize_fmp_ipo(item):
     else:
         status = "pre-ipo"
 
-    # Geo dal exchange
+    # Normalizza price_range: se è singolo "20" usa "$20", se è range "16-18" usa "$16-$18"
+    price_range = ""
+    if price_field:
+        if "-" in price_field:
+            parts = price_field.split("-")
+            try:
+                lo = float(parts[0].strip())
+                hi = float(parts[1].strip())
+                price_range = f"${lo:.0f}-${hi:.0f}"
+            except Exception:
+                price_range = price_field
+        else:
+            try:
+                p = float(price_field)
+                price_range = f"${p:.0f}"
+            except Exception:
+                price_range = price_field
+
+    # Geo dal exchange (Finnhub di solito ha "NASDAQ Global", "NYSE", "NASDAQ Capital Market" ecc.)
     geo_map = {
         "NASDAQ": "USA", "NYSE": "USA", "AMEX": "USA",
-        "LSE": "EU", "LON": "EU", "EURONEXT": "EU", "ENXT": "EU",
+        "LSE": "EU", "LON": "EU", "EURONEXT": "EU",
         "XETRA": "EU", "MIL": "EU", "BIT": "EU",
-        "HKEX": "Asia", "HK": "Asia", "TSE": "Asia", "JP": "Asia",
-        "TSX": "Canada", "TO": "Canada",
+        "HKEX": "Asia", "HK": "Asia", "TSE": "Asia",
+        "TSX": "Canada",
     }
     geo = "USA"
     if exchange:
+        ex_up = exchange.upper()
         for k, v in geo_map.items():
-            if k in exchange.upper():
+            if k in ex_up:
                 geo = v
                 break
 
     expected_date_label = ipo_d.strftime("%d %b %Y") if ipo_d else "TBD"
+
+    # Stima market cap dal totalSharesValue se disponibile
+    market_cap_estimate = None
+    if total_value:
+        try:
+            market_cap_estimate = int(total_value)
+        except Exception:
+            pass
 
     return {
         "ticker": symbol,
@@ -122,14 +152,14 @@ def normalize_fmp_ipo(item):
         "expected_date": expected_date_label,
         "price_range": price_range,
         "shares_offered": int(shares) if shares else None,
-        "market_cap_estimate": int(market_cap) if market_cap else None,
+        "market_cap_estimate": market_cap_estimate,
         "status": status,
         "raw_data": item,
     }
 
 
 def fetch_existing_ipos(supabase):
-    """Ritorna dict {ticker: row} per le IPO già nel DB (per evitare ri-enrichment costoso)."""
+    """Ritorna dict {ticker_date: row} per IPO già nel DB."""
     try:
         res = supabase.table("ipos_live").select("ticker, ipo_date, enriched_at, status").execute()
         out = {}
@@ -249,7 +279,7 @@ Lo `score` va da 0 a 100 e riflette quanto questa IPO è interessante in termini
 
 
 def merge_ipo(basic, enriched):
-    """Combina dati grezzi FMP + arricchimento AI nello schema finale del DB."""
+    """Combina dati grezzi + arricchimento AI nello schema finale del DB."""
     merged = {**basic}
     if enriched:
         for key in ["sector", "category", "headline", "summary", "business", "thesis",
@@ -267,12 +297,10 @@ def merge_ipo(basic, enriched):
 def save_ipo(supabase, row):
     """UPSERT su (ticker, ipo_date)"""
     try:
-        # Sanitizza campi JSONB: devono essere list o dict, altrimenti None
         for k in ["pros", "cons", "catalysts", "competitors", "comparables", "founders",
                   "lead_underwriters", "suited_for", "raw_data"]:
             if k in row and row[k] is not None and not isinstance(row[k], (list, dict)):
                 row[k] = None
-        # Rimuovi campi None opzionali
         clean = {k: v for k, v in row.items() if v is not None}
         clean["updated_at"] = datetime.now(timezone.utc).isoformat()
         supabase.table("ipos_live").upsert(clean, on_conflict="ticker,ipo_date").execute()
@@ -293,22 +321,22 @@ def cleanup_old_ipos(supabase):
 
 
 def main():
-    if not FMP_API_KEY:
-        print("[!] FMP_API_KEY mancante. Termino.")
+    if not FINNHUB_API_KEY:
+        print("[!] FINNHUB_API_KEY mancante. Termino.")
         return
 
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
     anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-    print("[ipos] Avvio fetch IPO calendar...")
-    raw_ipos = fetch_fmp_ipos()
-    print(f"[ipos] {len(raw_ipos)} record grezzi da FMP")
+    print("[ipos] Avvio fetch IPO calendar da Finnhub...")
+    raw_ipos = fetch_finnhub_ipos()
+    print(f"[ipos] {len(raw_ipos)} record grezzi da Finnhub")
 
     if not raw_ipos:
         print("[ipos] Nessun record. Termino.")
         return
 
-    # DEBUG: stampa un campione per capire lo schema della response
+    # DEBUG: stampa un campione per capire lo schema
     if raw_ipos:
         print(f"[ipos] DEBUG primo record: keys = {list(raw_ipos[0].keys())[:15]}")
 
@@ -316,7 +344,7 @@ def main():
     normalized = []
     for item in raw_ipos:
         try:
-            n = normalize_fmp_ipo(item)
+            n = normalize_finnhub_ipo(item)
             if n.get("ticker") and n.get("name"):
                 normalized.append(n)
         except Exception as e:
@@ -324,11 +352,11 @@ def main():
 
     print(f"[ipos] {len(normalized)} dopo normalizzazione")
 
-    # Ordina: priorità a IPO con market cap più alto + priced/upcoming
+    # Ordina: priorità a IPO con market cap più alto + upcoming/priced
     def sort_key(n):
-        status_priority = {"upcoming": 0, "priced": 1, "recent": 2, "pre-ipo": 3, "past": 4}
+        status_priority = {"upcoming": 0, "priced": 1, "recent": 2, "pre-ipo": 3, "past": 4, "withdrawn": 5}
         return (
-            status_priority.get(n.get("status"), 5),
+            status_priority.get(n.get("status"), 6),
             -(n.get("market_cap_estimate") or 0),
             n.get("ipo_date") or "9999",
         )
@@ -338,7 +366,6 @@ def main():
     to_process = normalized[:MAX_IPOS_TO_ENRICH]
     print(f"[ipos] {len(to_process)} verranno arricchite con AI")
 
-    # Carica IPO già nel DB per skip su quelle già arricchite recentemente
     existing = fetch_existing_ipos(supabase)
 
     success = 0
@@ -377,10 +404,8 @@ def main():
             cat = row.get("category", "—")
             sc = row.get("score", "—")
             print(f"    OK: {cat}, score {sc}")
-        # Piccola pausa per non saturare l'API
         time.sleep(0.3)
 
-    # Cleanup IPO molto vecchie
     cleanup_old_ipos(supabase)
 
     print(f"\n[ipos] Completato: {success}/{len(to_process)} salvate, {skipped} skipped.")
