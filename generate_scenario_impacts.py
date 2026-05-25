@@ -1,11 +1,11 @@
+
 """
 generate_scenario_impacts.py
 Per OGNI scenario attivo + OGNI cliente, fa un'analisi AI personalizzata:
 - Quali asset del cliente sono impattati DIRETTAMENTE o INDIRETTAMENTE dallo scenario?
-- Per ogni asset, calcola il movimento atteso (% e €).
+- Storia narrativa "Cosa succede a [cliente]" su misura per quel cliente.
+- Azioni suggerite specifiche.
 - Salva in client_scenario_impacts (UPSERT su client_id+scenario_id).
-
-Gira 1 volta al giorno (dopo generate_scenarios). Costo: ~$0.05-0.10 per cliente per scenario.
 """
 
 import os
@@ -19,7 +19,6 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 MODEL = "claude-sonnet-4-5"
 
-# Quanti scenari recenti analizzare per ogni cliente (i più recenti)
 SCENARIOS_PER_CLIENT = 3
 
 
@@ -63,7 +62,6 @@ def fetch_recent_scenarios(supabase, limit=SCENARIOS_PER_CLIENT):
 
 
 def enrich_holdings(holdings, prices):
-    """Calcola valore corrente per ogni holding."""
     enriched = []
     total_value = 0
     for h in holdings:
@@ -108,8 +106,6 @@ def parse_response(text):
 
 
 def analyze_impact(anthropic_client, client, scenario, holdings_enriched, total_value):
-    """Chiede a Claude un'analisi profonda: per ogni holding del cliente, è impattato dallo scenario?"""
-
     holdings_str = "\n".join([
         f"  - {h['ticker']} ({h['name']}): valore €{h['value']:.0f}, tipo {h['asset_type']}"
         for h in holdings_enriched
@@ -129,28 +125,39 @@ def analyze_impact(anthropic_client, client, scenario, holdings_enriched, total_
         for k, v in sector_impact.items()
     ]) if sector_impact else "  (nessun impatto settoriale specificato)"
 
-    prompt = f"""Sei un risk analyst senior italiano. Devi analizzare un PORTAFOGLIO SPECIFICO contro uno SCENARIO DI STRESS TEST e identificare ogni asset impattato.
+    profile_map = {"conservativo": "prudente", "moderato": "moderato", "aggressivo": "aggressivo"}
+    profile = profile_map.get(client.get("risk_profile"), "moderato")
+    first_name = (client.get('name', '') or '').split(' ')[0] or "il cliente"
+
+    prompt = f"""Sei un risk analyst senior italiano. Devi analizzare un PORTAFOGLIO SPECIFICO contro uno SCENARIO DI STRESS TEST e produrre:
+1. La lista degli asset impattati (diretti + indiretti)
+2. Una STORIA personalizzata su misura per questo cliente
+3. Azioni suggerite specifiche al cliente
 
 ═══════════════════════════════════
-SCENARIO DI STRESS TEST
+SCENARIO
 ═══════════════════════════════════
 TITOLO: {scenario.get('title', '—')}
 DESCRIZIONE: {scenario.get('description', '—')}
 
-WINNERS (asset che salgono):
+WINNERS:
 {winners_str if winners_str else "  (nessuno)"}
 
-LOSERS (asset che scendono):
+LOSERS:
 {losers_str if losers_str else "  (nessuno)"}
 
 IMPATTI PER SETTORE:
 {sectors_str}
 
 ═══════════════════════════════════
-PORTAFOGLIO DEL CLIENTE
+CLIENTE
 ═══════════════════════════════════
-Cliente: {client.get('name', '—')}
-Valore totale: €{total_value:.0f}
+Nome: {client.get('name', '—')}
+Profilo di rischio: {profile}
+Obiettivo: {client.get('objective', 'crescita')}
+Orizzonte temporale: {client.get('time_horizon', 'medio')}
+Età: {client.get('age', 'n/d')} anni
+Valore portafoglio: €{total_value:.0f}
 
 ASSET DETENUTI:
 {holdings_str}
@@ -158,25 +165,45 @@ ASSET DETENUTI:
 ═══════════════════════════════════
 ISTRUZIONI CRITICHE
 ═══════════════════════════════════
-Per OGNI asset del portafoglio, decidi se è IMPATTATO da questo scenario, e come.
 
-REGOLE:
-1. IMPATTO DIRETTO: l'asset è esplicitamente nella lista winners/losers (match esatto del ticker).
-2. IMPATTO INDIRETTO: l'asset NON è in winners/losers ma è SOSTANZIALMENTE EQUIVALENTE a uno di questi, oppure è strettamente esposto al settore impattato. Esempi reali:
-   - Scenario menziona "EEM" (iShares EM ETF), cliente ha "XMME.MI" (Xtrackers MSCI EM): SONO LO STESSO INDICE, impatto pari (100%)
-   - Scenario menziona "QQQ" (Nasdaq), cliente ha "EQQQ.MI" (Invesco QQQ UCITS): SONO LO STESSO INDICE, impatto pari (100%)
-   - Scenario impatta settore "ai", cliente ha "AI4U.MI" (Nvidia-tracker AI thematic ETF): impatto al 70-80% del movimento settoriale (ETF tematico diversificato)
-   - Scenario impatta settore "semis", cliente ha "TSM": impatto al 100% (è puramente quel settore)
-   - Scenario impatta "gold", cliente ha "GLD.MI" o "PHAU.L": stesso oro, impatto 90-100%
-3. NON IMPATTATO: l'asset non è correlato in modo significativo (es. scenario su crisi idrica, cliente ha NVDA → NVDA non è impattata direttamente né per settore; non includere).
-4. Sii CONSERVATIVO: solo asset realmente impattati. Meglio omettere che inventare.
-5. Per ogni asset impattato, fornisci una PERCENTUALE precisa (es. -22.5%) basata sull'expected_move dello scenario + il peso (1.0 per match esatto, 0.7-0.9 per ETF equivalenti, 0.5-0.7 per esposizione parziale).
+PARTE 1 — IMPATTI ASSET
+Per OGNI asset del portafoglio, decidi se è IMPATTATO da questo scenario.
+- DIRETTO: l'asset è esplicitamente in winners/losers (match esatto del ticker)
+- INDIRETTO: l'asset NON è in winners/losers ma è equivalente (es. XMME.MI ≈ EEM) o legato al settore impattato
+- NON IMPATTATO: salta
+
+Per ogni asset impattato fornisci percentuale precisa (es. -22.5%) basata sull'expected_move dello scenario:
+- Match esatto: 100% del movimento
+- ETF equivalente diretto (stesso indice): 90-100%
+- ETF tematico settoriale: 70-85%
+- Single-stock pure-play settoriale: 90-100%
+
+PARTE 2 — STORIA PERSONALIZZATA
+Scrivi una descrizione su misura per {first_name} (3-5 frasi, 400-700 caratteri).
+La storia deve essere SPECIFICA per questo portafoglio:
+- Cita per NOME 2-3 asset reali del cliente che sono coinvolti
+- Spiega in italiano semplice come quegli specifici asset reagirebbero
+- Menziona l'impatto percentuale sul portafoglio totale
+- Considera il profilo {profile} e l'obiettivo del cliente
+- Dai un'idea della gravità (es. "lieve scossone", "perdita significativa", "danno serio") in modo onesto
+
+NIENTE jargon vuoto tipo: "esposizione strutturale", "tesi compromessa", "rationale solido", "outlook deteriorato", "fondamentali solidi".
+Lessico semplice, frasi brevi (max 25 parole).
+Esempi di buon stile:
+✓ "Per Serena la crisi idrica si traduce in un calo dell'11.5% sul portafoglio totale. L'asset più colpito è ACWI.MI (l'ETF globale), che subirebbe il taglio maggiore in valore assoluto: circa €1.850 in meno. Anche XMME.MI sui mercati emergenti soffre, mentre AI4U.MI sull'intelligenza artificiale cala del 30% per le nuove regole sui consumi idrici dei data center."
+✗ "Il portafoglio è strutturalmente esposto agli asset penalizzati e richiede un repricing tattico."
+
+PARTE 3 — AZIONI SUGGERITE
+3-5 azioni operative SPECIFICHE per questo cliente. Non template generici.
+Ogni azione:
+- Cita un asset reale del cliente
+- Specifica numericamente cosa fare (es. "ridurre del 30%", "non incrementare")
+- Spiega in 1 frase il perché
+- Considera la situazione del cliente (profilo, obiettivo)
 
 ═══════════════════════════════════
 FORMATO OUTPUT (SOLO JSON)
 ═══════════════════════════════════
-Rispondi SOLO con JSON puro, nessun preambolo:
-
 {{
   "affected_holdings": [
     {{
@@ -188,30 +215,30 @@ Rispondi SOLO con JSON puro, nessun preambolo:
       "expected_move_pct": -28.0,
       "expected_move_eur": -3500,
       "type": "loser",
-      "reasoning": "Xtrackers MSCI Emerging Markets UCITS replica lo stesso indice MSCI EM dell'iShares EEM citato nello scenario. La penalizzazione attesa è praticamente identica."
-    }},
+      "reasoning": "Xtrackers MSCI Emerging Markets replica lo stesso indice MSCI EM dell'EEM citato come loser. Impatto pari al 100%."
+    }}
+  ],
+  "story_text": "Storia personalizzata 3-5 frasi che cita asset reali del cliente...",
+  "suggested_actions": [
     {{
-      "ticker": "NVDA",
-      "name": "NVIDIA",
-      "value": 8000,
-      "impact_type": "direct",
-      "expected_move_pct": -32.0,
-      "expected_move_eur": -2560,
-      "type": "loser",
-      "reasoning": "NVDA è esplicitamente nello scenario come loser."
+      "title": "Ridurre XMME.MI del 30%",
+      "ticker": "XMME.MI",
+      "description": "Vendere circa €3.750 di XMME.MI riduce l'esposizione ai mercati emergenti che subiranno il maggior impatto. La liquidità può essere reinvestita in oro o cash."
     }}
   ]
 }}
 
 Se nessun asset è impattato, restituisci:
 {{
-  "affected_holdings": []
+  "affected_holdings": [],
+  "story_text": "Nessun asset del portafoglio di {first_name} è direttamente coinvolto in questo scenario. [breve spiegazione personalizzata di perché il portafoglio è ben isolato dallo scenario, citando 1-2 asset effettivamente detenuti dal cliente come elementi che danno protezione]",
+  "suggested_actions": []
 }}"""
 
     try:
         response = anthropic_client.messages.create(
             model=MODEL,
-            max_tokens=3000,
+            max_tokens=3500,
             messages=[{"role": "user", "content": prompt}],
         )
         text = response.content[0].text.strip()
@@ -222,7 +249,6 @@ Se nessun asset è impattato, restituisci:
 
 
 def save_impact(supabase, user_id, client_id, scenario_id, total_value, analysis):
-    """UPSERT su client_id+scenario_id."""
     affected = analysis.get("affected_holdings") or []
     direct_count = sum(1 for h in affected if h.get("impact_type") == "direct")
     indirect_count = sum(1 for h in affected if h.get("impact_type") == "indirect")
@@ -239,6 +265,8 @@ def save_impact(supabase, user_id, client_id, scenario_id, total_value, analysis
         "affected_holdings": affected,
         "direct_count": direct_count,
         "indirect_count": indirect_count,
+        "story_text": analysis.get("story_text") or "",
+        "suggested_actions": analysis.get("suggested_actions") or [],
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
     try:
@@ -303,7 +331,7 @@ def main():
             if save_impact(supabase, user_id, client_id, scenario_id, total_value, analysis):
                 success += 1
                 n = len(analysis.get("affected_holdings") or [])
-                print(f"    OK: {n} asset impattati")
+                print(f"    OK: {n} asset impattati, story={'sì' if analysis.get('story_text') else 'no'}")
             else:
                 failed += 1
 
