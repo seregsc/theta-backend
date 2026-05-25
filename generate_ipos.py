@@ -7,6 +7,10 @@ Tier system:
   1 = Big names curati (Stripe, Klarna, SpaceX, OpenAI, ecc.) - sempre in cima
   2 = Finnhub IPO con offer significativo (>$100M)
   3 = Finnhub IPO minori (SPAC, micro-cap)
+
+OTTIMIZZAZIONE COSTI: usa Haiku per arricchimento.
+Il task è abbastanza strutturato (output JSON con campi noti) e Haiku ce la fa bene.
+Risparmio ~75% rispetto a Sonnet.
 """
 
 import os
@@ -30,60 +34,43 @@ print(f"[boot] env check: SUPABASE_URL={'OK' if SUPABASE_URL else 'MANCANTE'}, "
       f"ANTHROPIC_API_KEY={'OK' if ANTHROPIC_API_KEY else 'MANCANTE'}, "
       f"FINNHUB_API_KEY={'OK' if FINNHUB_API_KEY else 'MANCANTE'}", flush=True)
 
-MODEL = "claude-sonnet-4-5"
+MODEL = "claude-haiku-4-5-20251001"
 
 DAYS_BACK = 30
 DAYS_FORWARD = 180
-MAX_FINNHUB_IPOS = 12  # Limito Finnhub per non sprecare AI
+MAX_FINNHUB_IPOS = 12
 HTTP_TIMEOUT = 20
 AI_TIMEOUT = 60
 
-# Soglia per tier 2 vs tier 3
-TIER2_MIN_OFFER_USD = 100_000_000  # $100M minimum offer
-TIER2_MIN_SHARES = 5_000_000        # o 5M shares
+TIER2_MIN_OFFER_USD = 100_000_000
+TIER2_MIN_SHARES = 5_000_000
 
-# ═══════════════════════════════════════════════════════════════
 # TIER 1 — BIG NAMES CURATED
-# Aziende attese in IPO 2026-2028 (alcune confermate, altre rumored)
-# ═══════════════════════════════════════════════════════════════
 TIER1_BIG_NAMES = [
-    # Fintech
     {"ticker": "STRP", "name": "Stripe", "geo": "USA", "exchange": "NYSE", "expected_date": "H2 2026", "status": "pre-ipo", "hint_sector": "fintech / payments"},
     {"ticker": "KLAR", "name": "Klarna", "geo": "EU", "exchange": "NYSE", "expected_date": "Q3 2026", "status": "pre-ipo", "hint_sector": "fintech / BNPL"},
     {"ticker": "REVO", "name": "Revolut", "geo": "EU", "exchange": "LSE/NASDAQ", "expected_date": "2026-2027", "status": "rumored", "hint_sector": "fintech / neobank"},
     {"ticker": "CHYM", "name": "Chime Financial", "geo": "USA", "exchange": "NASDAQ", "expected_date": "Q4 2026", "status": "pre-ipo", "hint_sector": "fintech / neobank"},
     {"ticker": "PLAID", "name": "Plaid", "geo": "USA", "exchange": "NASDAQ", "expected_date": "2026-2027", "status": "rumored", "hint_sector": "fintech / open banking"},
     {"ticker": "BREX", "name": "Brex", "geo": "USA", "exchange": "NASDAQ", "expected_date": "2027", "status": "rumored", "hint_sector": "fintech / corporate cards"},
-
-    # AI / Data
     {"ticker": "OPENAI", "name": "OpenAI", "geo": "USA", "exchange": "NASDAQ", "expected_date": "2027+", "status": "rumored", "hint_sector": "AI foundation models"},
     {"ticker": "ANTHRO", "name": "Anthropic", "geo": "USA", "exchange": "NASDAQ", "expected_date": "2027+", "status": "rumored", "hint_sector": "AI foundation models"},
     {"ticker": "XAI", "name": "xAI", "geo": "USA", "exchange": "NASDAQ", "expected_date": "2026-2027", "status": "rumored", "hint_sector": "AI Musk"},
     {"ticker": "DBX2", "name": "Databricks", "geo": "USA", "exchange": "NASDAQ", "expected_date": "Q4 2026", "status": "pre-ipo", "hint_sector": "Data / AI lakehouse"},
     {"ticker": "CHRE", "name": "Cohere", "geo": "Canada", "exchange": "NASDAQ", "expected_date": "2026-2027", "status": "rumored", "hint_sector": "AI enterprise LLM"},
-
-    # Crypto
     {"ticker": "KRAK", "name": "Kraken", "geo": "USA", "exchange": "NASDAQ", "expected_date": "2026", "status": "rumored", "hint_sector": "crypto exchange"},
     {"ticker": "CIRCLE", "name": "Circle Internet", "geo": "USA", "exchange": "NYSE", "expected_date": "2026", "status": "pre-ipo", "hint_sector": "crypto stablecoin USDC"},
-
-    # Tech consumer
     {"ticker": "DISCRD", "name": "Discord", "geo": "USA", "exchange": "NASDAQ", "expected_date": "2026", "status": "rumored", "hint_sector": "social communication"},
     {"ticker": "CANVA", "name": "Canva", "geo": "Australia", "exchange": "NASDAQ", "expected_date": "2026", "status": "rumored", "hint_sector": "design SaaS"},
     {"ticker": "NOTION", "name": "Notion Labs", "geo": "USA", "exchange": "NASDAQ", "expected_date": "2027", "status": "rumored", "hint_sector": "productivity SaaS"},
-
-    # Space / Defense / Auto
     {"ticker": "SPCX", "name": "SpaceX", "geo": "USA", "exchange": "NASDAQ", "expected_date": "2027+", "status": "rumored", "hint_sector": "space / aerospace"},
     {"ticker": "ANDR", "name": "Anduril Industries", "geo": "USA", "exchange": "NYSE", "expected_date": "2026-2027", "status": "rumored", "hint_sector": "defense tech AI"},
     {"ticker": "WAYMO", "name": "Waymo", "geo": "USA", "exchange": "NASDAQ", "expected_date": "2027+", "status": "rumored", "hint_sector": "autonomous driving"},
     {"ticker": "WYVE", "name": "Wayve Technologies", "geo": "EU", "exchange": "NASDAQ", "expected_date": "Q1 2027", "status": "pre-ipo", "hint_sector": "autonomous driving"},
-
-    # Recently IPO'd (utili come reference per il consulente)
     {"ticker": "CRWV", "name": "CoreWeave", "geo": "USA", "exchange": "NASDAQ", "expected_date": "Q1 2025 (IPO completed)", "status": "priced", "hint_sector": "AI cloud GPU"},
     {"ticker": "RDDT", "name": "Reddit", "geo": "USA", "exchange": "NYSE", "expected_date": "Mar 2024 (IPO completed)", "status": "priced", "hint_sector": "social media"},
     {"ticker": "ALAB", "name": "Astera Labs", "geo": "USA", "exchange": "NASDAQ", "expected_date": "Mar 2024 (IPO completed)", "status": "priced", "hint_sector": "AI connectivity chip"},
     {"ticker": "TEM", "name": "Tempus AI", "geo": "USA", "exchange": "NASDAQ", "expected_date": "Giu 2024 (IPO completed)", "status": "priced", "hint_sector": "biotech AI"},
-
-    # Healthcare
     {"ticker": "RXRX2", "name": "Recursion Pharmaceuticals", "geo": "USA", "exchange": "NASDAQ", "expected_date": "2026 (follow-on)", "status": "pre-ipo", "hint_sector": "biotech AI drug discovery"},
 ]
 
@@ -185,7 +172,6 @@ def normalize_finnhub_ipo(item):
         except Exception:
             pass
 
-    # Determina tier 2 vs 3 in base a offer size
     shares_int = int(shares) if shares else 0
     if market_cap_estimate and market_cap_estimate >= TIER2_MIN_OFFER_USD:
         tier = 2
@@ -211,7 +197,6 @@ def normalize_finnhub_ipo(item):
 
 
 def build_tier1_basic(entry):
-    """Trasforma un entry TIER1 nel formato basic per l'AI."""
     return {
         "ticker": entry["ticker"],
         "name": entry["name"],
@@ -366,7 +351,6 @@ La timeline DEVE avere almeno 5 milestone."""
 
 def merge_ipo(basic, enriched):
     merged = {**basic}
-    # rimuovi hint_sector che non va salvato in DB
     merged.pop("hint_sector", None)
     if enriched:
         for key in ["sector", "category", "headline", "summary", "business", "thesis",
@@ -398,7 +382,6 @@ def save_ipo(supabase, row):
 
 
 def cleanup_old_ipos(supabase):
-    """Rimuove IPO Finnhub molto vecchie (tier 2 e 3). I tier 1 li teniamo sempre."""
     cutoff = (date.today() - timedelta(days=90)).isoformat()
     try:
         supabase.table("ipos_live").delete() \
@@ -411,12 +394,10 @@ def cleanup_old_ipos(supabase):
 
 
 def process_ipo(anthropic_client, supabase, basic, existing, label):
-    """Arricchisce e salva un'IPO. Restituisce True se salvato con successo."""
     ticker = basic.get("ticker")
     ipo_date = basic.get("ipo_date") or "TBD"
     key = f"{ticker}_{ipo_date}"
 
-    # Skip se già arricchita di recente (< 7 giorni) e status non cambiato
     if key in existing:
         existing_row = existing[key]
         old_status = existing_row.get("status")
@@ -453,6 +434,7 @@ def main():
         print("[!] FINNHUB_API_KEY mancante. Termino.", flush=True)
         return
 
+    print(f"[init] Modello AI: {MODEL}", flush=True)
     print("[init] Creo client Supabase + Anthropic...", flush=True)
     try:
         supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -467,9 +449,7 @@ def main():
 
     start_time = time.time()
 
-    # ═══════════════════════════════════════════════════════════════
     # TIER 1 — Big names curated
-    # ═══════════════════════════════════════════════════════════════
     print(f"\n=== TIER 1: {len(TIER1_BIG_NAMES)} big names curated ===", flush=True)
     tier1_success = 0
     for i, entry in enumerate(TIER1_BIG_NAMES, 1):
@@ -480,9 +460,7 @@ def main():
         time.sleep(0.3)
     print(f"  Tier 1 completato: {tier1_success}/{len(TIER1_BIG_NAMES)}", flush=True)
 
-    # ═══════════════════════════════════════════════════════════════
-    # TIER 2 + 3 — Finnhub
-    # ═══════════════════════════════════════════════════════════════
+    # TIER 2/3 — Finnhub
     print(f"\n=== TIER 2/3: fetch da Finnhub ===", flush=True)
     raw_ipos = fetch_finnhub_ipos()
     print(f"  {len(raw_ipos)} record grezzi", flush=True)
@@ -497,7 +475,6 @@ def main():
             except Exception as e:
                 print(f"  [normalize error] {e}", flush=True)
 
-        # Ordina per tier (tier 2 prima di 3), poi market_cap, poi data
         def sort_key(n):
             status_priority = {"upcoming": 0, "priced": 1, "recent": 2, "pre-ipo": 3, "past": 4, "withdrawn": 5}
             return (
@@ -508,13 +485,11 @@ def main():
             )
         normalized.sort(key=sort_key)
 
-        # Prendi prima quelle tier 2 (significative), poi qualche tier 3
         tier2 = [n for n in normalized if n.get("tier") == 2]
         tier3 = [n for n in normalized if n.get("tier") == 3]
         print(f"  Tier 2 trovate: {len(tier2)}", flush=True)
         print(f"  Tier 3 trovate: {len(tier3)}", flush=True)
 
-        # AI enrichment solo per tier 2 (significative) + i primi 3 tier 3 più grossi
         to_process = tier2[:MAX_FINNHUB_IPOS] + tier3[:3]
         print(f"  Verranno arricchite: {len(to_process)} (tier2={min(len(tier2), MAX_FINNHUB_IPOS)}, tier3=3)", flush=True)
 
@@ -527,9 +502,7 @@ def main():
             time.sleep(0.3)
         print(f"  Tier 2/3 completato: {tier23_success}/{len(to_process)}", flush=True)
 
-        # I tier 3 rimanenti li salviamo SENZA arricchimento AI (dati grezzi only)
-        # così appaiono comunque in UI ma in fondo alla lista
-        remaining_tier3 = tier3[3:30]  # max 30 tier 3 grezze in totale
+        remaining_tier3 = tier3[3:30]
         if remaining_tier3:
             print(f"  Salvo {len(remaining_tier3)} tier 3 rimanenti senza arricchimento AI...", flush=True)
             saved_raw = 0
