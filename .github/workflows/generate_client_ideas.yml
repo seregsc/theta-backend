@@ -1,0 +1,23 @@
+name: Generate Client Ideas (weekly)
+
+on:
+  schedule:
+    # Ogni lunedì alle 6:00 UTC = 7:00 IT inverno / 8:00 IT estate
+    - cron: '0 6 * * 1'
+  workflow_dispatch:  # Permette di lanciarlo manualmente
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install supabase anthropic
+      - env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python generate_client_ideas.py
