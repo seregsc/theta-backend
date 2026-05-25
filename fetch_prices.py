@@ -54,7 +54,7 @@ def fetch_quote(ticker):
 
 def save_to_supabase(prices):
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-    return supabase.table("prices").insert(prices).execute()
+    return supabase.table("prices").upsert(prices, on_conflict="ticker").execute()
 
 
 def main():
