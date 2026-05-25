@@ -2,7 +2,7 @@
 generate_opportunities.py
 Genera occasioni di mercato con:
 - Soglie severe (solo opportunità di qualità)
-- Descrizioni AI dettagliate e CONCRETE (no frasi vuote)
+- Descrizioni AI dettagliate e CONCRETE, in linguaggio semplice
 - Persistenza intelligente: opportunità rimangono finché AI le ritiene valide
 - Status: 'active' o 'expired' (scadute restano visibili 30 giorni)
 """
@@ -107,8 +107,8 @@ def fetch_existing_opportunities(supabase):
 
 
 def enrich_with_ai(opportunity, news_context=""):
-    """Chiede a Claude di arricchire l'opportunità con analisi dettagliata e CONCRETA.
-    Prompt rigido per evitare frasi vuote tipo 'rationale solido', 'endorsement major player'."""
+    """Chiede a Claude di arricchire l'opportunità con analisi dettagliata e CONCRETA,
+    in linguaggio semplice ma con dati tecnici precisi."""
     if not ANTHROPIC_API_KEY:
         return opportunity
 
@@ -133,7 +133,7 @@ def enrich_with_ai(opportunity, news_context=""):
         "beneficiari": "questo asset potrebbe beneficiare di eventi recenti documentati nelle news",
     }
 
-    prompt = f"""Sei un analista finanziario senior italiano. Scrivi un'analisi PROFESSIONALE per un consulente che la userà col cliente.
+    prompt = f"""Sei un analista finanziario senior italiano. Scrivi un'analisi per un consulente che la userà col cliente (spesso non esperto).
 
 DATI:
 - Asset: {ticker}
@@ -141,33 +141,43 @@ DATI:
 - Performance: {perf_str}
 - Situazione: {category_brief.get(category, "")}
 
-NEWS RECENTI (può contenere driver rilevanti):
+NEWS RECENTI:
 {news_context[:1500] if news_context else "Nessuna news specifica."}
 
-ISTRUZIONI CRITICHE:
-1. NON usare MAI frasi vuote tipo: "rationale solido", "driver concreto", "endorsement major player", "fondamentali solidi", "outlook positivo", "guidance robusta", "esposizione strategica", "tesi intatta".
-2. USA SOLO FATTI CONCRETI: nomi di prodotti, numeri (ricavi, P/E, margini), eventi specifici (date, news), settori di business reali.
-3. Se non sai cosa è successo specificamente, ammetti onestamente: "Il movimento di prezzo non è collegato a news pubbliche identificabili" e basa l'analisi sul contesto settoriale.
-4. Scrivi in italiano scorrevole, come un report di banca d'affari rivolto a un consulente.
+ISTRUZIONI CRITICHE SUL LESSICO:
+1. Scrivi in ITALIANO SEMPLICE come parleresti a un cliente non esperto. Frasi brevi (max 25 parole).
+2. NIENTE frasi vuote tipo: "rationale solido", "endorsement major player", "fondamentali solidi", "guidance robusta", "tesi intatta", "outlook positivo", "driver concreto".
+3. Sostituisci jargon con espressioni semplici:
+   - "drawdown" → "calo dal massimo recente"
+   - "volatilità elevata" → "prezzi che oscillano molto"
+   - "free cash flow" → "soldi che l'azienda genera dopo le spese"
+   - "guidance" → "previsioni che l'azienda dà al mercato"
+   - "earnings" → "trimestrale dei conti"
+   - "buyback" → "acquisto azioni proprie dalla società"
+   - "P/E ratio" → "rapporto prezzo/utili (quanti anni di profitti servirebbero a recuperare l'investimento)"
+   - "backlog" → "ordini già acquisiti da consegnare"
+4. USA SEMPRE FATTI CONCRETI: nomi di prodotti, numeri (ricavi in miliardi, %, date precise), eventi specifici.
+5. Se non sai il driver specifico: "Il prezzo è sceso senza una news pubblica identificabile" (no inventarsi).
+6. Quando usi acronimi tecnici (es. EPS, ROE, EBITDA), spiegali brevemente al primo uso.
 
-Fornisci JSON con questi campi obbligatori:
-- title: 60-80 caratteri, descrittivo e SPECIFICO (es. "Gilead -15% post-trial fase 3 fallito: rimbalzo se Q4 conferma cash flow")
-- summary: 1-2 frasi (max 200 char), sintesi factuale
-- reason: 3-5 frasi (300-600 caratteri). Struttura: COSA è successo (fatti) → PERCHÉ è successo (driver) → PERCHÉ è un'occasione adesso (tesi)
-- catalyst: 1-2 frasi (max 250 char). Eventi/condizioni FUTURE specifiche che potrebbero far apprezzare l'asset (es. "Earnings Q4 il 15 gennaio: previsto FCF 8B; eventuale riacquisto azioni nel 2026")
-- risks: 1-2 frasi (max 250 char). Rischi SPECIFICI a questo asset, non generici
-- target_timing: orizzonte (es. "1-3 mesi", "6-12 mesi")
+Fornisci JSON con questi campi:
+- title: 60-80 caratteri, descrittivo. Esempio: "Boeing -18%: ritardo certificazione 737, ma 5.000 aerei già ordinati"
+- summary: 1-2 frasi semplici (max 200 char), per il cliente al telefono
+- reason: 3-5 frasi (300-600 caratteri). Spiega: cosa è successo (in parole semplici) → perché è successo → perché è un'occasione. NIENTE jargon.
+- catalyst: 1-2 frasi (max 250 char). Cosa potrebbe far salire il prezzo: eventi futuri SPECIFICI con date se possibile.
+- risks: 1-2 frasi (max 250 char). Rischi SPECIFICI in parole semplici.
+- target_timing: orizzonte realistico (es. "1-3 mesi", "6-12 mesi")
 - conviction: 60-95
 
 Rispondi SOLO con JSON, nessun altro testo.
 
-ESEMPIO BUONO (NON copiarlo, usa la logica):
+ESEMPIO BUONO:
 {{
-  "title": "Boeing -18% in 30gg: ritardo 737 MAX 10 ma backlog 5.000 aerei intatto",
-  "summary": "Boeing scende su delay certificazione MAX 10 ma il backlog di 5000 aerei resta intatto e Airbus non può sostituire.",
-  "reason": "Boeing è scesa del 18% in 30 giorni dopo che FAA ha rinviato la certificazione del 737 MAX 10 a Q3 2026. Il mercato teme delay simili per gli altri modelli. Tuttavia il backlog ordini è ai massimi storici (5.000 aerei) e Airbus non ha capacità di produzione per rubargli quota. Il free cash flow tornerà positivo nel Q4 2026 secondo guidance, dimezzando il debito.",
-  "catalyst": "Certificazione MAX 10 prevista Q3 2026; consegna primo 777X a Lufthansa nel 2026; guidance FCF positivo nel Q3 earnings di ottobre.",
-  "risks": "Nuovi incidenti su 737 MAX (probabilità bassa ma impatto altissimo); strike sindacale a Seattle non risolto; concorrenza COMAC C919 in Cina.",
+  "title": "Boeing -18%: ritardo certificazione aereo, ma ordini intatti",
+  "summary": "Boeing scende per problemi a certificare il nuovo modello 737. Gli ordini totali restano altissimi e Airbus non riesce a sostituirla.",
+  "reason": "Boeing è scesa del 18% in un mese dopo che l'autorità americana ha rinviato l'autorizzazione del nuovo aereo 737 MAX 10. Il mercato si è spaventato. Però gli ordini in attesa di consegna sono al massimo storico (5.000 aerei, circa 500 miliardi di ricavi futuri). Airbus, il concorrente, non ha abbastanza fabbriche per rubargli quote. Da fine 2026 la cassa dovrebbe tornare positiva.",
+  "catalyst": "Certificazione del 737 MAX 10 prevista per autunno 2026. Prima consegna del nuovo 777X a Lufthansa entro l'anno. Risultati di ottobre potrebbero confermare miglioramento.",
+  "risks": "Nuovo incidente su 737 MAX (poco probabile ma impatto enorme). Sciopero a Seattle ancora in corso. Concorrenza cinese sul mercato asiatico.",
   "target_timing": "6-12 mesi",
   "conviction": 78
 }}"""
@@ -217,7 +227,6 @@ def evaluate_existing(opp, current_price_data):
         return False
     if category == "beneficiari" and delta_pct >= 20:
         return False
-    # Cap massimo a 60 giorni per evitare opportunità "zombie"
     try:
         created = opp.get("created_at")
         if isinstance(created, str):
@@ -281,7 +290,7 @@ def compute_beneficiari(news_list, prices_data, top_n=6):
     news_text = "\n\n".join(news_summary)
     available_tickers = sorted([t for t in prices_data.keys() if prices_data[t].get("price")])
 
-    prompt = f"""Sei un analista finanziario senior. Seleziona SOLO opportunità con CONVICTION ALTA.
+    prompt = f"""Sei un analista finanziario senior italiano. Scrivi per un consulente che userà i tuoi testi col cliente.
 
 NEWS RECENTI (ultime 72h):
 {news_text}
@@ -289,19 +298,24 @@ NEWS RECENTI (ultime 72h):
 ASSET DISPONIBILI: {', '.join(available_tickers[:200])}
 
 REGOLE:
-1. Suggerisci asset SOLO con CONVICTION ALTA (score >= 70) che possa beneficiare di eventi concreti.
+1. Suggerisci asset SOLO con CONVICTION ALTA (score >= 70) che possono beneficiare di eventi concreti nelle news.
 2. NON suggerire generici. Solo driver chiaro e dimostrabile dalle news.
-3. NON usare frasi vuote tipo "rationale solido", "endorsement major player". Usa fatti concreti.
-4. Se nessuna news ha eventi impattanti, RISPONDI con [].
+3. Se nessuna news ha eventi davvero impattanti, RISPONDI con [].
+
+LESSICO:
+- Scrivi in italiano SEMPLICE (frasi brevi, max 25 parole), per un consulente che parla con risparmiatori non esperti.
+- NIENTE frasi vuote tipo "rationale solido", "endorsement major player", "outlook positivo", "guidance robusta".
+- Sostituisci jargon: "drawdown" → "calo recente"; "buyback" → "acquisto azioni proprie"; "guidance" → "previsioni dell'azienda"; "EPS" → "utili per azione"; "earnings" → "trimestrale".
+- Usa SEMPRE fatti concreti: numeri precisi, date, nomi di prodotti.
 
 Per ogni asset, JSON in ITALIANO con:
-- ticker (nella lista)
-- title: max 70 caratteri descrittivo e SPECIFICO
-- summary: 1-2 frasi max 200 char
-- reason: 3-5 frasi max 600 char. Struttura: COSA è successo (news) → COME impatta l'asset → PERCHÉ è un'occasione
-- catalyst: 1-2 frasi max 250 char con eventi/condizioni future SPECIFICHE
-- risks: 1-2 frasi max 250 char con rischi SPECIFICI
-- news_driver: la news specifica che genera l'opportunità (max 100 char)
+- ticker (deve essere nella lista)
+- title: max 70 caratteri SPECIFICO
+- summary: 1-2 frasi semplici (max 200 char)
+- reason: 3-5 frasi (max 600 char). Struttura: COSA dice la news → COME aiuta l'asset → PERCHÉ è un'occasione adesso
+- catalyst: 1-2 frasi (max 250 char) con eventi futuri SPECIFICI (date se possibile)
+- risks: 1-2 frasi (max 250 char) con rischi SPECIFICI in parole semplici
+- news_driver: la news specifica (max 100 char)
 - target_timing: orizzonte (es. "1-3 mesi")
 - expected_move: "+X-Y%"
 - time_horizon: "short" | "medium" | "long"
@@ -309,7 +323,7 @@ Per ogni asset, JSON in ITALIANO con:
 - score: 70-95
 - conviction: 70-95
 
-Rispondi SOLO con JSON array. Se niente, []."""
+Rispondi SOLO con JSON array. Se nessuna opportunità di qualità: []."""
 
     try:
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -387,7 +401,7 @@ def compute_sottovalutati(prices_data, news_text="", top_n=6):
 
 def main():
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-    print("[opportunities] Inizio analisi (persistenza + scadute + AI rigorosa)...")
+    print("[opportunities] Inizio analisi...")
 
     prices_data = fetch_prices_with_history(supabase)
     print(f"[opportunities] Caricati {len(prices_data)} ticker")
@@ -401,15 +415,13 @@ def main():
         if t: news_lines.append(f"- {t}\n  {s}")
     news_text = "\n".join(news_lines)
 
-    # STEP 1: pulizia scadute oltre 30 giorni
     cutoff_30d = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
     try:
         supabase.table("opportunities").delete().eq("status", "expired").lt("expired_at", cutoff_30d).execute()
-        print(f"[opportunities] Pulite scadute oltre 30gg")
+        print("[opportunities] Pulite scadute oltre 30gg")
     except Exception as e:
         print(f"  [cleanup expired error] {e}")
 
-    # STEP 2: valuta opportunità ATTIVE esistenti
     existing = fetch_existing_opportunities(supabase)
     active_existing = [o for o in existing if o.get("status", "active") == "active"]
     print(f"[opportunities] Esistenti attive: {len(active_existing)}")
@@ -421,7 +433,7 @@ def main():
             to_keep.append(opp)
         else:
             to_expire_ids.append(opp["id"])
-    print(f"[opportunities] Da mantenere attive: {len(to_keep)}, da scadere: {len(to_expire_ids)}")
+    print(f"[opportunities] Da mantenere: {len(to_keep)}, da scadere: {len(to_expire_ids)}")
 
     for opp_id in to_expire_ids:
         try:
@@ -432,7 +444,6 @@ def main():
         except Exception as e:
             print(f"  [expire error] {opp_id}: {e}")
 
-    # STEP 3: genera nuove
     existing_tickers_by_cat = {}
     for opp in to_keep:
         cat = opp["category"]
