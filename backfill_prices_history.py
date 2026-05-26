@@ -1,3 +1,4 @@
+
 """
 Backfill Prices History — Scarica storico daily di ogni ticker e salva in Supabase.
 
@@ -6,7 +7,7 @@ Strategia smart:
 - Run successivi: scarica solo ultimi 30 giorni (incremental update)
 
 Tickers letti dinamicamente da holdings/etf_catalog/opportunities + benchmark fissi.
-Tabella: prices_history (ticker, date, close, open, high, low, volume)
+Tabella: prices_history (id, ticker, date, price, currency, created_at)
 UNIQUE constraint su (ticker, date) → upsert sicuro, niente duplicati.
 """
 
@@ -28,6 +29,75 @@ BENCHMARK_TICKERS = [
     "TLT", "IEF", "SHY",
     "^TNX",
 ]
+
+
+# ─────────────────────────────────────────────────────────────────────
+# CURRENCY MAPPING — dedotta dal suffisso del ticker
+# ─────────────────────────────────────────────────────────────────────
+SUFFIX_TO_CURRENCY = {
+    ".MI": "EUR",   # Borsa Italiana
+    ".DE": "EUR",   # Xetra
+    ".F":  "EUR",   # Frankfurt
+    ".PA": "EUR",   # Euronext Paris
+    ".AS": "EUR",   # Euronext Amsterdam
+    ".BR": "EUR",   # Euronext Brussels
+    ".LS": "EUR",   # Euronext Lisbon
+    ".MC": "EUR",   # Madrid
+    ".VI": "EUR",   # Vienna
+    ".HE": "EUR",   # Helsinki
+    ".IR": "EUR",   # Ireland
+    ".L":  "GBP",   # London
+    ".SW": "CHF",   # SIX Swiss
+    ".TO": "CAD",   # Toronto
+    ".V":  "CAD",   # TSX Venture
+    ".HK": "HKD",   # Hong Kong
+    ".T":  "JPY",   # Tokyo
+    ".KS": "KRW",   # Korea
+    ".AX": "AUD",   # Australia
+    ".NS": "INR",   # India NSE
+    ".BO": "INR",   # India BSE
+    ".SA": "BRL",   # São Paulo
+}
+
+
+def infer_currency(ticker: str) -> str:
+    """Ritorna la valuta probabile per un ticker yfinance basandosi sul suffisso."""
+    t = ticker.upper().strip()
+
+    # Crypto pairs (BTC-USD, ETH-USD, ...)
+    if "-USD" in t:
+        return "USD"
+    if "-EUR" in t:
+        return "EUR"
+
+    # Indici Yahoo (^TNX, ^GSPC, ^STOXX50E, ...)
+    if t.startswith("^"):
+        # ^STOXX50E è EUR, ^FTSE è GBP, ^N225 è JPY — ma il valore degli indici
+        # è un numero puro (non un prezzo), quindi USD è solo un placeholder.
+        if "STOXX" in t or t == "^FTSEMIB":
+            return "EUR"
+        if t == "^FTSE":
+            return "GBP"
+        if t == "^N225":
+            return "JPY"
+        return "USD"
+
+    # Futures (=F)
+    if t.endswith("=F"):
+        return "USD"
+
+    # Forex (=X)
+    if t.endswith("=X"):
+        return "USD"
+
+    # Match per suffisso .XX
+    if "." in t:
+        suffix = "." + t.split(".")[-1]
+        if suffix in SUFFIX_TO_CURRENCY:
+            return SUFFIX_TO_CURRENCY[suffix]
+
+    # Default: nessun suffisso → US stock/ETF → USD
+    return "USD"
 
 
 def get_all_tickers_from_db(supabase):
@@ -88,7 +158,7 @@ def fetch_history(ticker, period):
         return None
 
 
-def hist_to_rows(ticker, hist, since_date=None):
+def hist_to_rows(ticker, hist, currency, since_date=None):
     """Trasforma il DataFrame yfinance in lista di dict pronta per upsert.
     Se since_date è dato, filtra solo righe successive a quella data."""
     rows = []
@@ -102,11 +172,8 @@ def hist_to_rows(ticker, hist, since_date=None):
         rows.append({
             "ticker": ticker,
             "date": date_str,
-            "close": float(close),
-            "open": float(row.get("Open")) if row.get("Open") == row.get("Open") else None,
-            "high": float(row.get("High")) if row.get("High") == row.get("High") else None,
-            "low":  float(row.get("Low"))  if row.get("Low")  == row.get("Low")  else None,
-            "volume": int(row.get("Volume")) if row.get("Volume") == row.get("Volume") else None,
+            "price": float(close),
+            "currency": currency,
         })
     return rows
 
@@ -177,7 +244,8 @@ def main():
         if hist is None:
             continue
 
-        rows = hist_to_rows(ticker, hist, since_date=since)
+        currency = infer_currency(ticker)
+        rows = hist_to_rows(ticker, hist, currency, since_date=since)
         if not rows:
             print(f"  · [{i}/{len(all_tickers)}] {ticker} [{mode}]: nessuna riga nuova")
             continue
@@ -188,7 +256,7 @@ def main():
         else:
             incremental_count += 1
         total_rows_added += saved
-        print(f"  ✓ [{i}/{len(all_tickers)}] {ticker} [{mode}]: +{saved} righe")
+        print(f"  ✓ [{i}/{len(all_tickers)}] {ticker} [{mode}] ({currency}): +{saved} righe")
 
         time.sleep(0.25)  # politeness yfinance
 
