@@ -9,26 +9,22 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 
-MODEL = "claude-haiku-4-5-20251001"
+MODEL = "claude-sonnet-4-5"
 TICKERS = ["AAPL", "MSFT", "NVDA", "TSLA", "GOOGL", "META", "AMZN", "SPY"]
-
-# Quante news massime salvare per ogni esecuzione
-MAX_NEWS_PER_RUN = 1
-
-CATEGORIES = ["azioni", "macroeconomia", "geopolitica", "materie_prime", "generica"]
 
 
 def fetch_news_for_tickers(tickers):
-    # Ampliamo finestra a 24h per avere più candidate da cui scegliere la migliore
-    published_after = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%S")
+    """Scarica news generiche + ticker-specific da MarketAux."""
+    published_after = (datetime.now(timezone.utc) - timedelta(hours=12)).strftime("%Y-%m-%dT%H:%M:%S")
     all_news = []
     url = "https://api.marketaux.com/v1/news/all"
 
+    # Chiamata 1: news generiche finanza/tech/energia/salute
     params1 = {
         "industries": "Finance,Technology,Energy,Healthcare",
         "filter_entities": "true",
         "language": "en",
-        "limit": 5,
+        "limit": 3,
         "published_after": published_after,
         "api_token": MARKETAUX_KEY,
     }
@@ -43,11 +39,12 @@ def fetch_news_for_tickers(tickers):
     except Exception as e:
         print(f"  Errore generic news: {e}")
 
+    # Chiamata 2: news sui ticker specifici
     params2 = {
         "symbols": ",".join(tickers),
         "filter_entities": "true",
         "language": "en",
-        "limit": 5,
+        "limit": 3,
         "published_after": published_after,
         "api_token": MARKETAUX_KEY,
     }
@@ -62,7 +59,7 @@ def fetch_news_for_tickers(tickers):
     except Exception as e:
         print(f"  Errore ticker news: {e}")
 
-    # Dedup per uuid
+    # Deduplicazione su uuid
     seen = set()
     unique = []
     for n in all_news:
@@ -74,7 +71,26 @@ def fetch_news_for_tickers(tickers):
     return unique
 
 
+def clean_image_url(url):
+    """Pulisce e valida l'image_url. Restituisce None se non valido."""
+    if not url or not isinstance(url, str):
+        return None
+    url = url.strip()
+    if not url:
+        return None
+    # Verifica che sia un URL http(s) valido
+    if not (url.startswith("http://") or url.startswith("https://")):
+        return None
+    # Filtri base: niente placeholder generici
+    placeholders = ["placeholder", "default", "no-image", "blank.jpg", "blank.png"]
+    url_lower = url.lower()
+    if any(p in url_lower for p in placeholders):
+        return None
+    return url
+
+
 def parse_news_item(item):
+    """Converte una news MarketAux nel formato del database."""
     entities = item.get("entities", [])
     tickers = [e.get("symbol") for e in entities if e.get("symbol")]
     sentiments = [e.get("sentiment_score") for e in entities if e.get("sentiment_score") is not None]
@@ -85,6 +101,7 @@ def parse_news_item(item):
         "summary": item.get("description") or item.get("snippet"),
         "source": item.get("source"),
         "url": item.get("url"),
+        "image_url": clean_image_url(item.get("image_url")),
         "published_at": item.get("published_at"),
         "tickers": ",".join(tickers) if tickers else None,
         "sentiment": avg_sentiment,
@@ -92,65 +109,44 @@ def parse_news_item(item):
 
 
 def generate_full_analysis(client, title_en, summary_en, tickers_csv):
+    """
+    Genera 4 sezioni in italiano via Claude:
+    TITOLO, SOMMARIO (lungo), IMPATTO (analisi mercati), STRATEGIA (operativa).
+    """
     tickers_str = tickers_csv if tickers_csv else "—"
-    prompt = f"""Sei un analista finanziario senior italiano che scrive direttamente per UN consulente finanziario specifico (l'utente di Theta). Riceverai una notizia in inglese e devi produrre un'analisi completa in italiano + classificare la categoria.
+    prompt = f"""Sei un analista finanziario senior italiano che scrive per consulenti professionisti. Riceverai una notizia in inglese e devi produrre un'analisi completa in italiano fluido e professionale, da pubblicare sull'app Theta.
 
 REGOLE GENERALI
-- Sii fattuale: usa SOLO informazioni presenti nel testo originale. Non inventare numeri, date, eventi.
-- Tono neutro nei primi 3 blocchi (TITOLO, SOMMARIO, IMPATTO).
-- Nella STRATEGIA parla direttamente al consulente al TU («valuta», «monitora», «considera», «alleggerisci»). Mai «i consulenti potrebbero».
-- Forme condizionali per i consigli («se il segnale si conferma...», «per clienti con profilo X...»).
-
-LESSICO — OBBLIGATORIO LEGGGIBILE
-Il consulente leggerà questi testi e dovrà spesso ripeterli a clienti NON esperti di finanza. Quindi:
-- Italiano SEMPLICE, frasi brevi (max 25 parole).
-- NIENTE jargon vuoto: "fondamentali solidi", "outlook positivo", "rationale", "guidance robusta", "endorsement major player", "tesi intatta".
-- Sostituisci tecnicismi con sinonimi semplici, spiegando il termine tecnico solo al primo uso:
-  - "drawdown" → "calo dal massimo recente"
-  - "guidance" → "previsioni dell'azienda"
-  - "buyback" → "riacquisto di azioni proprie"
-  - "earnings" → "risultati trimestrali"
-  - "EPS" → "utile per azione"
-  - "P/E" → "rapporto prezzo/utili"
-  - "free cash flow" → "soldi che l'azienda genera dopo le spese"
-  - "yield" → "rendimento"
-  - "spread" → "differenza tra due rendimenti"
-- Mantieni SEMPRE i numeri precisi (ricavi, %, date, ticker).
-- Nella STRATEGIA, usa frasi pratiche e operative (cosa fare, quando, perché).
-
-CATEGORIE — Scegline UNA tra:
-- azioni: notizie su singole società quotate, earnings, M&A, IPO, partnership aziendali
-- macroeconomia: dati economici (PIL, inflazione, occupazione), banche centrali, tassi
-- geopolitica: guerre, conflitti, sanzioni, tensioni internazionali, elezioni, politica estera
-- materie_prime: petrolio, gas, oro, metalli, agricoltura, energia
-- generica: altro (regolamentazione finanziaria, tecnologia generica, varie)
+- Scrivi in italiano corretto, sintassi naturale, lessico finanziario professionale.
+- Sii fattuale: usa SOLO informazioni presenti nel testo originale. Non inventare numeri, date, eventi, o citazioni.
+- Tono: neutro, informativo, mai sensazionalistico.
+- Non dare consigli espliciti di acquisto/vendita.
 
 INPUT
 Titolo originale (EN): {title_en}
 Sommario originale (EN): {summary_en or "—"}
 Ticker citati: {tickers_str}
 
-OUTPUT — rispondi ESATTAMENTE in questo formato, con i 5 blocchi etichettati, senza preamboli:
+OUTPUT — rispondi ESATTAMENTE in questo formato, con i 4 blocchi etichettati TITOLO, SOMMARIO, IMPATTO, STRATEGIA. Niente preamboli, niente conclusioni:
 
-CATEGORIA: <una sola tra: azioni, macroeconomia, geopolitica, materie_prime, generica>
+TITOLO: <titolo in italiano, max 110 caratteri. Riformulato, non tradotto letterale. Informativo e neutro.>
 
-TITOLO: <titolo italiano, max 110 caratteri, riformulato non tradotto letterale, in linguaggio chiaro>
+SOMMARIO: <riassunto sostanzioso in italiano, 4-6 frasi (600-900 caratteri). Includi: il contesto della notizia, i numeri/dati chiave presenti nell'originale, gli attori coinvolti, il significato per il mercato. Scrivi come un articolo giornalistico breve, non come bullet point. Se l'originale è povero di dettagli, espandi con il contesto settoriale plausibile (es. "il comparto X è sotto pressione per…") ma SENZA inventare fatti specifici.>
 
-SOMMARIO: <riassunto 4-6 frasi (600-900 caratteri): contesto, dati chiave, attori, significato per il mercato. Stile giornalistico breve, accessibile.>
+IMPATTO: <analisi di 3-4 frasi (350-550 caratteri) sull'impatto previsto. Indica: quali settori/asset sono direttamente coinvolti, in che direzione potrebbero muoversi, quali correlazioni di mercato sono rilevanti (es. tassi, dollaro, oro, oil). Concreto e ragionato.>
 
-IMPATTO: <analisi 3-4 frasi (350-550 caratteri): settori/asset coinvolti, direzione (sale/scende), correlazioni. Spiega i collegamenti in modo chiaro.>
-
-STRATEGIA: <suggerimento operativo 3-4 frasi (350-550 caratteri) al TU al consulente. Cita ticker se rilevanti. Cosa fare in pratica, in che ordine.>"""
+STRATEGIA: <suggerimento operativo di 3-4 frasi (350-550 caratteri) per un consulente che gestisce portafogli. Cosa potrebbe fare: monitorare un asset specifico, considerare riallocazione settoriale, valutare hedging, attendere conferme tecniche. Mai categorico ("compra X"), sempre condizionale ("se il segnale si conferma…", "per clienti con profilo Y…"). Cita ticker concreti se rilevanti.>"""
 
     try:
         response = client.messages.create(
             model=MODEL,
-            max_tokens=1500,
+            max_tokens=1200,
             messages=[{"role": "user", "content": prompt}],
         )
         text = response.content[0].text.strip()
 
-        sections = {"CATEGORIA": None, "TITOLO": None, "SOMMARIO": None, "IMPATTO": None, "STRATEGIA": None}
+        # Parsing: cerca i 4 blocchi etichettati
+        sections = {"TITOLO": None, "SOMMARIO": None, "IMPATTO": None, "STRATEGIA": None}
         current_key = None
         current_lines = []
         for line in text.split("\n"):
@@ -175,54 +171,85 @@ STRATEGIA: <suggerimento operativo 3-4 frasi (350-550 caratteri) al TU al consul
         if current_key and current_lines:
             sections[current_key] = " ".join(current_lines).strip()
 
-        cat = (sections["CATEGORIA"] or "generica").lower().strip()
-        if cat not in CATEGORIES:
-            cat = "generica"
-
-        return cat, sections["TITOLO"], sections["SOMMARIO"], sections["IMPATTO"], sections["STRATEGIA"]
+        return sections["TITOLO"], sections["SOMMARIO"], sections["IMPATTO"], sections["STRATEGIA"]
     except Exception as e:
-        print(f"  errore analisi: {e}")
-        return None, None, None, None, None
+        print(f"  ✗ errore analisi: {e}")
+        return None, None, None, None
 
 
-def upsert_news(supabase, news_items, anthropic_client, max_to_save):
-    new_count = 0
+def upsert_news(supabase, news_items, anthropic_client):
+    """Salva le news nuove e aggiorna quelle esistenti senza analisi italiana completa.
+    Aggiunge anche backfill di image_url per news esistenti che non ce l'hanno."""
+    new_count, updated_count, backfill_count = 0, 0, 0
 
-    # Filtro: solo news non gia in db
-    fresh_items = []
     for item in news_items:
         ext_id = item.get("external_id")
         if not ext_id:
             continue
-        existing = supabase.table("news").select("id").eq("external_id", ext_id).execute()
-        if not existing.data:
-            fresh_items.append(item)
 
-    print(f"  News nuove (non in db): {len(fresh_items)}")
+        # Cerca se esiste già (include image_url per backfill)
+        existing = supabase.table("news").select("id, title_it, impact_it, image_url").eq("external_id", ext_id).execute()
 
-    # Salva solo le prime N
-    for item in fresh_items[:max_to_save]:
-        cat, title_it, summary_it, impact_it, strategy_it = generate_full_analysis(
-            anthropic_client, item.get("title"), item.get("summary"), item.get("tickers")
-        )
-        item["category"] = cat
-        item["title_it"] = title_it
-        item["summary_it"] = summary_it
-        item["impact_it"] = impact_it
-        item["strategy_it"] = strategy_it
-        try:
-            supabase.table("news").insert(item).execute()
-            new_count += 1
-            preview = (title_it or item.get("title") or "")[:60]
-            print(f"  nuova [{cat}]: {preview}…")
-        except Exception as e:
-            print(f"  errore salvataggio: {e}")
+        if existing.data:
+            existing_row = existing.data[0]
+            has_complete_analysis = existing_row.get("title_it") and existing_row.get("impact_it")
+            current_image = existing_row.get("image_url")
+            new_image = item.get("image_url")
 
-    return new_count
+            # CASO A: analisi completa già esistente
+            if has_complete_analysis:
+                # Backfill image_url se manca e ora ce l'abbiamo
+                if not current_image and new_image:
+                    try:
+                        supabase.table("news").update({"image_url": new_image}).eq("id", existing_row["id"]).execute()
+                        backfill_count += 1
+                        print(f"  📷 backfill image: {(item.get('title') or '')[:50]}…")
+                    except Exception as e:
+                        print(f"  ✗ errore backfill image: {e}")
+                else:
+                    print(f"  · già analizzata: {(item.get('title') or '')[:60]}…")
+                continue
+
+            # CASO B: news esiste ma manca analisi italiana → rigenera
+            title_it, summary_it, impact_it, strategy_it = generate_full_analysis(
+                anthropic_client, item.get("title"), item.get("summary"), item.get("tickers")
+            )
+            if title_it:
+                update_payload = {
+                    "title_it": title_it,
+                    "summary_it": summary_it,
+                    "impact_it": impact_it,
+                    "strategy_it": strategy_it,
+                }
+                # Aggiungi image_url se mancava e ora ce l'abbiamo
+                if not current_image and new_image:
+                    update_payload["image_url"] = new_image
+                supabase.table("news").update(update_payload).eq("id", existing_row["id"]).execute()
+                updated_count += 1
+                print(f"  ↻ aggiornata: {title_it[:60]}…")
+        else:
+            # CASO C: news nuova → analisi e inserisci
+            title_it, summary_it, impact_it, strategy_it = generate_full_analysis(
+                anthropic_client, item.get("title"), item.get("summary"), item.get("tickers")
+            )
+            item["title_it"] = title_it
+            item["summary_it"] = summary_it
+            item["impact_it"] = impact_it
+            item["strategy_it"] = strategy_it
+            try:
+                supabase.table("news").insert(item).execute()
+                new_count += 1
+                preview = (title_it or item.get("title") or "")[:60]
+                img_tag = " 📷" if item.get("image_url") else ""
+                print(f"  ✓ nuova{img_tag}: {preview}…")
+            except Exception as e:
+                print(f"  ✗ errore salvataggio: {e}")
+
+    return new_count, updated_count, backfill_count
 
 
 def main():
-    print(f"Scarico news per {len(TICKERS)} ticker (ultime 24 ore, max {MAX_NEWS_PER_RUN} da salvare)...")
+    print(f"Scarico news per {len(TICKERS)} ticker (ultime 12 ore)...")
     news_raw = fetch_news_for_tickers(TICKERS)
     print(f"Ricevute {len(news_raw)} news da MarketAux.\n")
 
@@ -233,9 +260,9 @@ def main():
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
     anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
-    print(f"Analisi AI per max {MAX_NEWS_PER_RUN} news (Claude Haiku)...")
-    new_count = upsert_news(supabase, items, anthropic_client, MAX_NEWS_PER_RUN)
-    print(f"\nFatto: {new_count} news nuove salvate.")
+    print("Analisi completa AI e salvataggio...")
+    new_count, updated_count, backfill_count = upsert_news(supabase, items, anthropic_client)
+    print(f"\n✓ {new_count} news nuove, {updated_count} aggiornate, {backfill_count} backfill immagini.")
 
 
 if __name__ == "__main__":
