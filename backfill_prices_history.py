@@ -1,10 +1,10 @@
-
 """
 Backfill Prices History — Scarica storico daily di ogni ticker e salva in Supabase.
 
 Strategia smart:
 - Al primo run per un ticker: scarica 5 anni di storico
 - Run successivi: scarica solo ultimi 30 giorni (incremental update)
+- Se FORCE_FULL=true: forza il 5y backfill per TUTTI i ticker (una tantum)
 
 Tickers letti dinamicamente da holdings/etf_catalog/opportunities + benchmark fissi.
 Tabella: prices_history (id, ticker, date, price, currency, created_at)
@@ -19,6 +19,7 @@ from supabase import create_client
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+FORCE_FULL = os.environ.get("FORCE_FULL", "").lower() in ("true", "1", "yes")
 
 BENCHMARK_TICKERS = [
     "SPY", "QQQ", "DIA", "IWM", "VTI",
@@ -72,8 +73,6 @@ def infer_currency(ticker: str) -> str:
 
     # Indici Yahoo (^TNX, ^GSPC, ^STOXX50E, ...)
     if t.startswith("^"):
-        # ^STOXX50E è EUR, ^FTSE è GBP, ^N225 è JPY — ma il valore degli indici
-        # è un numero puro (non un prezzo), quindi USD è solo un placeholder.
         if "STOXX" in t or t == "^FTSEMIB":
             return "EUR"
         if t == "^FTSE":
@@ -197,6 +196,8 @@ def upsert_rows(supabase, rows):
 def main():
     print("=" * 60)
     print("BACKFILL PRICES HISTORY — yfinance → Supabase")
+    if FORCE_FULL:
+        print("⚡ FORCE_FULL=true → ricarica 5y per TUTTI i ticker")
     print("=" * 60)
 
     if not SUPABASE_URL or not SUPABASE_KEY:
@@ -217,28 +218,30 @@ def main():
     total_rows_added = 0
 
     for i, ticker in enumerate(all_tickers, 1):
-        last_date = get_last_date_for_ticker(supabase, ticker)
-
-        if last_date is None:
-            # FULL backfill: 5 anni di storico
+        if FORCE_FULL:
+            # Modalità force: ignora last_date e ricarica 5y per tutti
             period = "5y"
             mode = "FULL"
             since = None
         else:
-            # Controlla se serve aggiornare (ultimo record vecchio di almeno 1 giorno)
-            try:
-                last_dt = datetime.strptime(last_date, "%Y-%m-%d").date()
-                days_old = (datetime.utcnow().date() - last_dt).days
-                if days_old < 1:
-                    print(f"  · [{i}/{len(all_tickers)}] {ticker}: già aggiornato (last: {last_date})")
-                    skipped_count += 1
-                    continue
-            except Exception:
-                pass
-            # INCREMENTAL: ultimi 30 giorni (sovrabbondante per riempire eventuali giorni mancanti)
-            period = "1mo"
-            mode = "INCR"
-            since = last_date
+            last_date = get_last_date_for_ticker(supabase, ticker)
+            if last_date is None:
+                period = "5y"
+                mode = "FULL"
+                since = None
+            else:
+                try:
+                    last_dt = datetime.strptime(last_date, "%Y-%m-%d").date()
+                    days_old = (datetime.utcnow().date() - last_dt).days
+                    if days_old < 1:
+                        print(f"  · [{i}/{len(all_tickers)}] {ticker}: già aggiornato (last: {last_date})")
+                        skipped_count += 1
+                        continue
+                except Exception:
+                    pass
+                period = "1mo"
+                mode = "INCR"
+                since = last_date
 
         hist = fetch_history(ticker, period)
         if hist is None:
