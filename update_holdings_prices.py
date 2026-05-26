@@ -1,216 +1,184 @@
+"""
+Update Prices — Yahoo Finance only, dynamic holdings.
+
+Strategia:
+1. Legge tutti i ticker distinti dalla tabella `holdings` (clienti)
+2. Aggiunge una lista di benchmark fissi (indici/ETF principali)
+3. Fetcha prezzo + change_percent da yfinance
+4. Salva tutto nella tabella `prices` (insert, mantiene storico)
+
+Il workflow lo lancia ogni 30 minuti durante orario mercato lun-ven.
+"""
+
 import os
+import time
 import yfinance as yf
 from supabase import create_client
-from datetime import datetime, timezone, date
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
-# Ticker hardcoded di base (compatibilità con setup attuale).
-# Ai ticker qui sotto vengono aggiunti dinamicamente:
-#  - tutti gli ETF dal catalogo Supabase (etf_catalog)
-#  - tutti i ticker effettivamente detenuti dai clienti (holdings)
-ALL_TICKERS = [
-    "1211.HK", "ABBV", "ACWI.MI", "ADYEN.AS", "AEM", "AFRM", "AGG", "AI4U.MI", "AMD", "AMGN",
-    "AMT", "AMZN", "ANET", "ANTO.L", "ASML", "AVGO", "AZN.L", "BA.L", "BABA", "BAC",
-    "BHP", "BIIB", "BMW.DE", "BNP.PA", "BP", "BP.L", "BRBY.L", "BTC", "BTPM", "BTPM.MI",
-    "BWXT", "BYD", "CAT", "CCI", "CCJ", "CDI.PA", "CEG", "CFR.SW", "COIN", "COP",
-    "COPX", "COST", "CPR.MI", "CRUD.MI", "CRWD", "CVX", "DE", "DELL", "DFEN.MI", "DIS",
-    "DJE.PA", "DLR", "DNN", "DTE.DE", "DUK", "EEM", "EMB", "EMR", "ENB.TO", "ENEL.MI",
-    "ENI.MI", "EQIX", "EQNR", "EQNR.OL", "ERO", "ETH", "ETHA", "ETHE", "ETN", "EWI",
-    "EWY", "EWZ", "EZU", "F", "FBK.MI", "FBTC", "FCX", "FEZ", "FNV", "FXI",
-    "GD", "GDX", "GDXJ", "GE", "GILD", "GLD", "GLD.MI", "GLEN.L", "GM", "GOLD",
-    "GOOGL", "GS", "HAG.DE", "HD", "HII", "HON", "HYG", "IAU", "IBE.MC", "IBIT",
-    "IBND", "IBND.MI", "ICLN", "IEF", "INDA", "INFY", "INTC", "ISP.MI", "IVN.TO", "IXC",
-    "JNJ", "JPM", "KER.PA", "KO", "LDO.MI", "LLY", "LMT", "LQD", "MA", "MARA",
-    "MBG.DE", "MC.PA", "MCD", "MCHI", "MELI", "META", "MMM", "MONC.MI", "MRK", "MS",
-    "MSFT", "MSTR", "MU", "NEE", "NEM", "NESN.SW", "NKE", "NLR", "NOC", "NRG",
-    "NVDA", "NVO", "O", "OKLO", "OR.PA", "ORA.PA", "P911.DE", "PAAS", "PFE", "PG",
-    "PLD", "PLTR", "QCOM", "QQQ", "R2US.MI", "RACE", "REGN", "RHM.DE", "RIO", "RIOT",
-    "RMS.PA", "RR.", "RTX", "SBUX", "SCCO", "SHEL", "SHY", "SIE.DE", "SLB", "SLV",
-    "SMR", "SO", "SOL", "SPG", "SPY", "SQ", "STLAM.MI", "T", "TECK", "TIT.MI",
-    "TLT", "TM", "TMUS", "TRN.MI", "TSLA", "TSM", "TTE.PA", "TXT", "UCG.MI", "UEC",
-    "URA", "V", "VOD.L", "VRT", "VRTX", "VST", "VWO", "VZ", "WELL", "WMT",
-    "WPM", "WTIO.MI", "XAUUSD", "XEON.MI", "XLU", "XMME.MI", "XOM", "XOP",
+# Benchmark sempre presenti, anche se nessun cliente li detiene
+BENCHMARK_TICKERS = [
+    # USA indici / ETF tracker
+    "SPY", "QQQ", "DIA", "IWM", "VTI",
+    # ETF UCITS Europa (più affidabili come benchmark per consulenti italiani)
+    "VWCE.DE", "SWDA.MI", "IWDA.AS", "CSPX.MI", "EUNL.DE",
+    # Indici italiani / Europa
+    "FTSEMIB.MI",
+    # Crypto
+    "BTC-USD", "ETH-USD",
+    # Commodities (futures)
+    "GC=F",   # Gold
+    "CL=F",   # WTI Crude
+    "SI=F",   # Silver
+    # Bond
+    "TLT", "IEF", "SHY",
+    # Tassi (proxy)
+    "^TNX",   # US 10-year yield
 ]
 
-YF_ALIAS = {
-    "BTC": "BTC-USD",
-    "ETH": "ETH-USD",
-    "SOL": "SOL-USD",
-    "XAUUSD": "XAUUSD=X",
-    "BTPM": "IEAC.MI",
-    "BTPM.MI": "IEAC.MI",
-    "RR.": "RR.L",
-}
 
-
-def get_all_tickers(supabase):
-    """Compone la lista finale dei ticker da scaricare unendo:
-      - ALL_TICKERS hardcoded
-      - tutti i ticker da etf_catalog (attivi)
-      - tutti i ticker effettivamente in holdings dei clienti
-    Restituisce la lista deduplicata e ordinata.
-    """
-    tickers = set(ALL_TICKERS)
-    initial_count = len(tickers)
-
-    # 1) ETF catalog (tutti gli ETF Fineco)
+def _to_float(v):
     try:
-        res = supabase.table("etf_catalog").select("ticker").eq("active", True).execute()
-        rows = res.data or []
-        etf_tickers = [r["ticker"] for r in rows if r.get("ticker")]
-        before = len(tickers)
-        tickers.update(etf_tickers)
-        added = len(tickers) - before
-        print(f"[get_all_tickers] etf_catalog: {len(etf_tickers)} ticker letti, {added} nuovi aggiunti.")
+        return float(v) if v not in (None, "", "None") else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _to_int(v):
+    try:
+        return int(float(v)) if v not in (None, "", "None") else None
+    except (ValueError, TypeError):
+        return None
+
+
+def get_holdings_tickers(supabase):
+    """Recupera tutti i ticker distinti dalle holdings dei clienti."""
+    try:
+        # Paginiamo perché alcune query Supabase tagliano a 1000 default
+        all_tickers = set()
+        offset = 0
+        page_size = 1000
+        while True:
+            result = supabase.table("holdings").select("ticker").range(offset, offset + page_size - 1).execute()
+            if not result.data:
+                break
+            for row in result.data:
+                t = row.get("ticker")
+                if t:
+                    all_tickers.add(t.strip())
+            if len(result.data) < page_size:
+                break
+            offset += page_size
+        return sorted(all_tickers)
     except Exception as e:
-        print(f"[get_all_tickers] errore etf_catalog: {e}")
+        print(f"  ✗ errore lettura holdings: {e}")
+        return []
 
-    # 2) Ticker effettivamente in holdings dei clienti
+
+def fetch_yfinance(ticker):
+    """Fetch prezzo + change_percent da yfinance. Restituisce dict o None."""
     try:
-        res = supabase.table("holdings").select("ticker").execute()
-        rows = res.data or []
-        holding_tickers = [r["ticker"] for r in rows if r.get("ticker")]
-        before = len(tickers)
-        tickers.update(holding_tickers)
-        added = len(tickers) - before
-        print(f"[get_all_tickers] holdings: {len(holding_tickers)} record letti, {added} nuovi ticker aggiunti.")
-    except Exception as e:
-        print(f"[get_all_tickers] errore holdings: {e}")
+        t = yf.Ticker(ticker)
+        # period='5d' invece di '2d' per coprire weekend/festività
+        # così abbiamo sempre 2 close validi anche di lunedì mattina
+        hist = t.history(period="5d")
+        if hist.empty:
+            return None
+        price = float(hist["Close"].iloc[-1])
 
-    final_list = sorted(tickers)
-    print(f"[get_all_tickers] hardcoded {initial_count} + dinamici {len(final_list) - initial_count} = TOTALE {len(final_list)} ticker.")
-    return final_list
+        # change_percent = (close ultimo - close penultimo) / close penultimo * 100
+        change_pct = None
+        if len(hist) >= 2:
+            prev = float(hist["Close"].iloc[-2])
+            if prev > 0:
+                change_pct = ((price - prev) / prev) * 100
 
-
-def fetch_price_yf(ticker_original):
-    """Recupera prezzo corrente e variazione % da yfinance.
-    Restituisce (price, change_pct, currency) o (None, None, None)."""
-    yf_ticker = YF_ALIAS.get(ticker_original, ticker_original)
-    try:
-        t = yf.Ticker(yf_ticker)
+        # info è opzionale (può fallire per alcuni ticker esotici)
+        info = {}
         try:
-            fi = t.fast_info
-            price = fi.get("last_price")
-            prev_close = fi.get("previous_close")
-            currency = fi.get("currency") or "USD"
-            if price and price > 0:
-                change_pct = None
-                if prev_close and prev_close > 0:
-                    change_pct = ((price - prev_close) / prev_close) * 100.0
-                return float(price), change_pct, currency
+            info = t.info or {}
         except Exception:
             pass
-        hist = t.history(period="5d")
-        if len(hist) >= 1:
-            price = float(hist["Close"].iloc[-1])
-            change_pct = None
-            if len(hist) >= 2:
-                prev = float(hist["Close"].iloc[-2])
-                if prev > 0:
-                    change_pct = ((price - prev) / prev) * 100.0
-            currency = "USD"
-            try:
-                currency = t.info.get("currency") or "USD"
-            except Exception:
-                pass
-            return price, change_pct, currency
-        return None, None, None
+
+        return {
+            "ticker": ticker,
+            "price": price,
+            "change_percent": change_pct,
+            "volume": _to_int(hist["Volume"].iloc[-1]) if "Volume" in hist.columns else None,
+            "market_cap": _to_float(info.get("marketCap")),
+            "pe_ratio": _to_float(info.get("trailingPE")),
+            "currency": info.get("currency"),
+        }
     except Exception as e:
-        print(f"  [yf error] {ticker_original} (yf:{yf_ticker}): {e}")
-        return None, None, None
+        # Errore singolo ticker: log e continua
+        msg = str(e)[:80]
+        print(f"  ✗ {ticker}: {msg}")
+        return None
+
+
+def save_prices(supabase, prices):
+    """Salva i prezzi nella tabella `prices` con insert (mantiene storico)."""
+    return supabase.table("prices").insert(prices).execute()
 
 
 def main():
+    print("=" * 60)
+    print("UPDATE PRICES — yfinance, dynamic holdings")
+    print("=" * 60)
+
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        print("⚠ SUPABASE_URL o SUPABASE_KEY mancanti")
+        return
+
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-    # Composizione lista ticker dinamica
-    tickers_to_fetch = get_all_tickers(supabase)
-    print(f"[update_prices] {len(tickers_to_fetch)} ticker da aggiornare...")
+    # 1. Ticker da holdings + benchmark
+    holdings_tickers = get_holdings_tickers(supabase)
+    print(f"\n📊 Ticker da holdings clienti: {len(holdings_tickers)}")
+    if holdings_tickers:
+        print(f"   Esempio: {holdings_tickers[:5]}")
 
-    now_iso = datetime.now(timezone.utc).isoformat()
-    today_str = date.today().isoformat()  # YYYY-MM-DD
+    all_tickers = sorted(set(holdings_tickers + BENCHMARK_TICKERS))
+    print(f"📊 Ticker totali (holdings + benchmark): {len(all_tickers)}\n")
 
-    prices_data = {}
-    updated_prices_count = 0
-    saved_history_count = 0
-    failed_count = 0
-    failed_tickers = []
+    # 2. Fetch
+    print("--- Fetch yfinance ---")
+    prices = []
+    failed = []
+    for i, ticker in enumerate(all_tickers, 1):
+        data = fetch_yfinance(ticker)
+        if data:
+            prices.append(data)
+            change = data.get("change_percent") or 0
+            sign = "+" if change >= 0 else ""
+            print(f"  ✓ [{i}/{len(all_tickers)}] {ticker}: {data['price']:.2f} ({sign}{change:.2f}%)")
+        else:
+            failed.append(ticker)
+        # yfinance: pausa breve per non farsi rate-limitare
+        time.sleep(0.25)
 
-    for i, ticker in enumerate(tickers_to_fetch, 1):
-        print(f"  [{i}/{len(tickers_to_fetch)}] {ticker}...", end=" ", flush=True)
-        price, change_pct, currency = fetch_price_yf(ticker)
-        if price is None:
-            print("FAIL")
-            failed_count += 1
-            failed_tickers.append(ticker)
-            continue
-        prices_data[ticker] = price
-        ch_str = f"({change_pct:+.2f}%)" if change_pct is not None else ""
-        print(f"{currency} {price:.2f} {ch_str}")
+    # 3. Save
+    print()
+    if prices:
+        # Salviamo a batch per evitare timeout su tante righe
+        batch_size = 50
+        saved_total = 0
+        for i in range(0, len(prices), batch_size):
+            batch = prices[i:i + batch_size]
+            try:
+                save_prices(supabase, batch)
+                saved_total += len(batch)
+            except Exception as e:
+                print(f"  ✗ batch {i}-{i+len(batch)}: {e}")
+        print(f"✓ Salvati {saved_total}/{len(all_tickers)} prezzi nel database.")
+    else:
+        print("⚠ Nessun prezzo da salvare.")
 
-        # 1. Upsert in tabella prices (snapshot ultimo prezzo)
-        try:
-            supabase.table("prices").upsert({
-                "ticker": ticker,
-                "price": price,
-                "change_percent": change_pct,
-                "currency": currency,
-                "fetched_at": now_iso,
-                "created_at": now_iso,
-            }, on_conflict="ticker").execute()
-            updated_prices_count += 1
-        except Exception as e:
-            print(f"    [prices save error] {e}")
-
-        # 2. Upsert in tabella prices_history (1 record per (ticker, giorno))
-        try:
-            supabase.table("prices_history").upsert({
-                "ticker": ticker,
-                "date": today_str,
-                "price": price,
-                "currency": currency,
-            }, on_conflict="ticker,date").execute()
-            saved_history_count += 1
-        except Exception as e:
-            print(f"    [history save error] {e}")
-
-    print(f"\n[update_prices] Aggiornati {updated_prices_count}/{len(tickers_to_fetch)} prezzi.")
-    print(f"[update_prices] Salvati {saved_history_count} record in prices_history.")
-    print(f"[update_prices] {failed_count} FAIL.")
-    if failed_tickers:
-        # Stampa max i primi 30 per non intasare il log
-        preview = failed_tickers[:30]
-        suffix = "" if len(failed_tickers) <= 30 else f" (+ altri {len(failed_tickers) - 30})"
-        print(f"[update_prices] Ticker falliti: {', '.join(preview)}{suffix}")
-
-    # 3. Aggiorna current_value degli holdings
-    try:
-        res = supabase.table("holdings").select("id, ticker, quantity").execute()
-        holdings = res.data or []
-    except Exception as e:
-        print(f"[update_prices] Errore lettura holdings: {e}")
-        holdings = []
-
-    updated_holdings_count = 0
-    for h in holdings:
-        ticker = h.get("ticker")
-        if ticker not in prices_data:
-            continue
-        try:
-            new_value = float(h.get("quantity", 0)) * prices_data[ticker]
-            supabase.table("holdings").update({
-                "current_value": new_value,
-            }).eq("id", h["id"]).execute()
-            updated_holdings_count += 1
-        except Exception as e:
-            print(f"  [holdings save error] {h['id']}: {e}")
-
-    print(f"[update_prices] Aggiornati {updated_holdings_count}/{len(holdings)} holdings.")
+    if failed:
+        print(f"\n⚠ Ticker falliti ({len(failed)}): {', '.join(failed[:15])}{'...' if len(failed) > 15 else ''}")
 
 
 if __name__ == "__main__":
     main()
-
-
