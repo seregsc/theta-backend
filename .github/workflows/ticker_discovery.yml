@@ -1,0 +1,17 @@
+# .github/workflows/ticker_discovery.yml
+name: Ticker Discovery (one-shot)
+on:
+  workflow_dispatch:
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - run: pip install yfinance
+      - run: python ticker_discovery.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ticker-discovery-results
+          path: /tmp/ticker_discovery_results.csv
