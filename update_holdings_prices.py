@@ -53,49 +53,90 @@ def _to_int(v):
         return None
 
 
-def get_holdings_tickers(supabase):
-    """Recupera tutti i ticker distinti dalle holdings dei clienti."""
-    try:
-        # Paginiamo perché alcune query Supabase tagliano a 1000 default
-        all_tickers = set()
+def get_all_tickers_from_db(supabase):
+    """Recupera tutti i ticker distinti da tutte le tabelle rilevanti."""
+    all_tickers = set()
+
+    # Helper per fetchare con paginazione
+    def fetch_table(table, column):
         offset = 0
         page_size = 1000
         while True:
-            result = supabase.table("holdings").select("ticker").range(offset, offset + page_size - 1).execute()
+            try:
+                result = supabase.table(table).select(column).range(offset, offset + page_size - 1).execute()
+            except Exception as e:
+                print(f"  ⚠ {table}: {str(e)[:80]}")
+                return
             if not result.data:
-                break
+                return
             for row in result.data:
-                t = row.get("ticker")
+                t = row.get(column)
                 if t:
                     all_tickers.add(t.strip())
             if len(result.data) < page_size:
-                break
+                return
             offset += page_size
-        return sorted(all_tickers)
-    except Exception as e:
-        print(f"  ✗ errore lettura holdings: {e}")
-        return []
+
+    # 1. holdings (ticker detenuti dai clienti)
+    fetch_table("holdings", "ticker")
+    after_holdings = len(all_tickers)
+    print(f"   • Da holdings: {after_holdings}")
+
+    # 2. etf_catalog (catalogo ETF Fineco)
+    fetch_table("etf_catalog", "ticker")
+    after_etf = len(all_tickers)
+    print(f"   • +Da etf_catalog: {after_etf - after_holdings} (totale {after_etf})")
+
+    # 3. opportunities (asset segnalati come occasioni)
+    fetch_table("opportunities", "ticker")
+    after_opp = len(all_tickers)
+    print(f"   • +Da opportunities: {after_opp - after_etf} (totale {after_opp})")
+
+    return sorted(all_tickers)
+
+
+# Quando yfinance fallisce su un ticker, prova questi suffissi alternativi
+# (stesso ETF/asset quotato su altre borse).
+ALTERNATIVE_SUFFIXES = [".L", ".AS", ".DE", ".MI", ".PA", ""]
 
 
 def fetch_yfinance(ticker):
-    """Fetch prezzo + change_percent da yfinance. Restituisce dict o None."""
+    """Fetch prezzo + change_percent da yfinance, con fallback su suffissi alternativi."""
+    # Prova prima il ticker originale
+    result = _try_fetch(ticker)
+    if result:
+        return result
+
+    # Fallback: estrai il "base" del ticker e prova altri suffissi
+    base = ticker.split(".")[0] if "." in ticker else ticker
+    for suffix in ALTERNATIVE_SUFFIXES:
+        alt = base + suffix
+        if alt == ticker:
+            continue
+        result = _try_fetch(alt)
+        if result:
+            # Salva con il ticker originale (così matcha le holdings)
+            result["ticker"] = ticker
+            print(f"     └─ {ticker} risolto via {alt}")
+            return result
+    return None
+
+
+def _try_fetch(ticker):
+    """Tentativo singolo di fetch yfinance (senza fallback). Restituisce None su errore."""
     try:
         t = yf.Ticker(ticker)
-        # period='5d' invece di '2d' per coprire weekend/festività
-        # così abbiamo sempre 2 close validi anche di lunedì mattina
         hist = t.history(period="5d")
         if hist.empty:
             return None
         price = float(hist["Close"].iloc[-1])
 
-        # change_percent = (close ultimo - close penultimo) / close penultimo * 100
         change_pct = None
         if len(hist) >= 2:
             prev = float(hist["Close"].iloc[-2])
             if prev > 0:
                 change_pct = ((price - prev) / prev) * 100
 
-        # info è opzionale (può fallire per alcuni ticker esotici)
         info = {}
         try:
             info = t.info or {}
@@ -111,10 +152,7 @@ def fetch_yfinance(ticker):
             "pe_ratio": _to_float(info.get("trailingPE")),
             "currency": info.get("currency"),
         }
-    except Exception as e:
-        # Errore singolo ticker: log e continua
-        msg = str(e)[:80]
-        print(f"  ✗ {ticker}: {msg}")
+    except Exception:
         return None
 
 
@@ -134,14 +172,13 @@ def main():
 
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-    # 1. Ticker da holdings + benchmark
-    holdings_tickers = get_holdings_tickers(supabase)
-    print(f"\n📊 Ticker da holdings clienti: {len(holdings_tickers)}")
-    if holdings_tickers:
-        print(f"   Esempio: {holdings_tickers[:5]}")
+    # 1. Ticker da tutte le tabelle DB + benchmark
+    print("\n📊 Recupero ticker dal database:")
+    db_tickers = get_all_tickers_from_db(supabase)
+    print(f"\n📊 Ticker totali da DB: {len(db_tickers)}")
 
-    all_tickers = sorted(set(holdings_tickers + BENCHMARK_TICKERS))
-    print(f"📊 Ticker totali (holdings + benchmark): {len(all_tickers)}\n")
+    all_tickers = sorted(set(db_tickers + BENCHMARK_TICKERS))
+    print(f"📊 Con benchmark aggiunti: {len(all_tickers)}\n")
 
     # 2. Fetch
     print("--- Fetch yfinance ---")
