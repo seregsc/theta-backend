@@ -1,14 +1,19 @@
-name: Update Holdings Prices
+name: Update Prices
 
 on:
   schedule:
-    - cron: '0 7 * * *'  # ogni giorno alle 7:00 UTC (= 8:00 IT in inverno, 9:00 in estate)
+    # Ogni 30 minuti, lun-ven, dalle 07:00 alle 21:30 UTC
+    # In ora italiana (UTC+1 inverno / UTC+2 estate):
+    # - Inverno: 08:00-22:30 IT — copre Borsa Italiana (9:00-17:30) e Wall Street (15:30-22:00)
+    # - Estate: 09:00-23:30 IT — copre Borsa Italiana e Wall Street
+    # Totale: ~30 esecuzioni/giorno feriale, ~150/settimana
+    - cron: '*/30 7-21 * * 1-5'
   workflow_dispatch:
 
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 8
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,4 +30,4 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        run: python update_holdings_prices.py
+        run: python update_prices.py
