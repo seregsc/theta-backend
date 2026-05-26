@@ -1,10 +1,12 @@
 """
 generate_opportunities.py
 Genera occasioni di mercato con:
-- Soglie severe (solo opportunità di qualità)
+- Soglie ALLENTATE per avere più candidate (l'utente vuole vedere più occasioni)
 - Descrizioni AI dettagliate e CONCRETE, in linguaggio semplice
 - Persistenza intelligente: opportunità rimangono finché AI le ritiene valide
 - Status: 'active' o 'expired' (scadute restano visibili 30 giorni)
+
+OTTIMIZZAZIONE COSTI: usa Haiku per tutto.
 """
 
 import os
@@ -169,18 +171,7 @@ Fornisci JSON con questi campi:
 - target_timing: orizzonte realistico (es. "1-3 mesi", "6-12 mesi")
 - conviction: 60-95
 
-Rispondi SOLO con JSON, nessun altro testo.
-
-ESEMPIO BUONO:
-{{
-  "title": "Boeing -18%: ritardo certificazione aereo, ma ordini intatti",
-  "summary": "Boeing scende per problemi a certificare il nuovo modello 737. Gli ordini totali restano altissimi e Airbus non riesce a sostituirla.",
-  "reason": "Boeing è scesa del 18% in un mese dopo che l'autorità americana ha rinviato l'autorizzazione del nuovo aereo 737 MAX 10. Il mercato si è spaventato. Però gli ordini in attesa di consegna sono al massimo storico (5.000 aerei, circa 500 miliardi di ricavi futuri). Airbus, il concorrente, non ha abbastanza fabbriche per rubargli quote. Da fine 2026 la cassa dovrebbe tornare positiva.",
-  "catalyst": "Certificazione del 737 MAX 10 prevista per autunno 2026. Prima consegna del nuovo 777X a Lufthansa entro l'anno. Risultati di ottobre potrebbero confermare miglioramento.",
-  "risks": "Nuovo incidente su 737 MAX (poco probabile ma impatto enorme). Sciopero a Seattle ancora in corso. Concorrenza cinese sul mercato asiatico.",
-  "target_timing": "6-12 mesi",
-  "conviction": 78
-}}"""
+Rispondi SOLO con JSON, nessun altro testo."""
 
     try:
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -240,15 +231,20 @@ def evaluate_existing(opp, current_price_data):
     return True
 
 
-def compute_crolli(prices_data, news_text="", top_n=10):
+# ============================================================
+# CATEGORIA 1: CROLLI — SOGLIE ALLENTATE
+# Prima: ch_1d <= -10, ch_7d <= -15, ch_30d <= -25, top 10
+# Ora:   ch_1d <= -7,  ch_7d <= -12, ch_30d <= -20, top 15
+# ============================================================
+def compute_crolli(prices_data, news_text="", top_n=15):
     candidates = []
     for ticker, p in prices_data.items():
         ch_1d = p.get("change_1d") or 0
         ch_7d = p.get("change_7d")
         ch_30d = p.get("change_30d")
-        crash_1d = ch_1d <= -10
-        crash_7d = ch_7d is not None and ch_7d <= -15
-        crash_30d = ch_30d is not None and ch_30d <= -25
+        crash_1d = ch_1d <= -7
+        crash_7d = ch_7d is not None and ch_7d <= -12
+        crash_30d = ch_30d is not None and ch_30d <= -20
         if not (crash_1d or crash_7d or crash_30d):
             continue
         values = [v for v in [ch_1d, ch_7d, ch_30d] if v is not None]
@@ -276,7 +272,12 @@ def compute_crolli(prices_data, news_text="", top_n=10):
     return enriched
 
 
-def compute_beneficiari(news_list, prices_data, top_n=6):
+# ============================================================
+# CATEGORIA 2: BENEFICIARI EVENTI — SOGLIE ALLENTATE
+# Prima: score >= 70, top 6
+# Ora:   score >= 60, top 10
+# ============================================================
+def compute_beneficiari(news_list, prices_data, top_n=10):
     if not news_list or not ANTHROPIC_API_KEY:
         return []
     news_summary = []
@@ -298,8 +299,8 @@ NEWS RECENTI (ultime 72h):
 ASSET DISPONIBILI: {', '.join(available_tickers[:200])}
 
 REGOLE:
-1. Suggerisci asset SOLO con CONVICTION ALTA (score >= 70) che possono beneficiare di eventi concreti nelle news.
-2. NON suggerire generici. Solo driver chiaro e dimostrabile dalle news.
+1. Suggerisci asset con conviction MEDIO-ALTA (score >= 60) che possono beneficiare di eventi nelle news.
+2. Preferisci driver chiari e specifici, ma puoi includere anche driver settoriali/macro se ben argomentati.
 3. Se nessuna news ha eventi davvero impattanti, RISPONDI con [].
 
 LESSICO:
@@ -320,8 +321,8 @@ Per ogni asset, JSON in ITALIANO con:
 - expected_move: "+X-Y%"
 - time_horizon: "short" | "medium" | "long"
 - risk: "LOW" | "MED" | "HIGH"
-- score: 70-95
-- conviction: 70-95
+- score: 60-95
+- conviction: 60-95
 
 Rispondi SOLO con JSON array. Se nessuna opportunità di qualità: []."""
 
@@ -329,7 +330,7 @@ Rispondi SOLO con JSON array. Se nessuna opportunità di qualità: []."""
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
         msg = client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=3000,
+            max_tokens=4000,
             messages=[{"role": "user", "content": prompt}],
         )
         text = msg.content[0].text.strip()
@@ -344,7 +345,7 @@ Rispondi SOLO con JSON array. Se nessuna opportunità di qualità: []."""
         for item in parsed[:top_n]:
             ticker = item.get("ticker")
             score = int(item.get("score") or 0)
-            if score < 70: continue
+            if score < 60: continue
             if not ticker or ticker not in prices_data: continue
             p = prices_data[ticker]
             results.append({
@@ -364,7 +365,7 @@ Rispondi SOLO con JSON array. Se nessuna opportunità di qualità: []."""
                 "expected_move": item.get("expected_move") or "+5-10%",
                 "time_horizon": item.get("time_horizon") or "medium",
                 "risk": item.get("risk") or "MED",
-                "conviction": int(item.get("conviction") or 75),
+                "conviction": int(item.get("conviction") or 65),
             })
         return results
     except Exception as e:
@@ -372,17 +373,22 @@ Rispondi SOLO con JSON array. Se nessuna opportunità di qualità: []."""
         return []
 
 
-def compute_sottovalutati(prices_data, news_text="", top_n=6):
+# ============================================================
+# CATEGORIA 3: SOTTOVALUTATI — SOGLIE ALLENTATE
+# Prima: -25 <= ch_30d <= -10, ch_7d >= -10, ch_1d >= -5, top 6
+# Ora:   -25 <= ch_30d <= -7,  ch_7d >= -12, ch_1d >= -7, top 10
+# ============================================================
+def compute_sottovalutati(prices_data, news_text="", top_n=10):
     candidates = []
     for ticker, p in prices_data.items():
         ch_1d = p.get("change_1d") or 0
         ch_7d = p.get("change_7d")
         ch_30d = p.get("change_30d")
         if ch_30d is None: continue
-        if not (-25 <= ch_30d <= -10): continue
-        if (ch_7d or 0) < -10: continue
-        if ch_1d < -5: continue
-        score = 65 + min(25, int(abs(ch_30d)))
+        if not (-25 <= ch_30d <= -7): continue
+        if (ch_7d or 0) < -12: continue
+        if ch_1d < -7: continue
+        score = 60 + min(30, int(abs(ch_30d)))
         candidates.append({
             "category": "sottovalutati", "ticker": ticker,
             "current_price": p["price"], "currency": p["currency"],
@@ -401,7 +407,7 @@ def compute_sottovalutati(prices_data, news_text="", top_n=6):
 
 def main():
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-    print("[opportunities] Inizio analisi...")
+    print("[opportunities] Inizio analisi (soglie allentate)...")
 
     prices_data = fetch_prices_with_history(supabase)
     print(f"[opportunities] Caricati {len(prices_data)} ticker")
@@ -415,6 +421,7 @@ def main():
         if t: news_lines.append(f"- {t}\n  {s}")
     news_text = "\n".join(news_lines)
 
+    # STEP 1: cleanup scadute oltre 30 giorni
     cutoff_30d = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
     try:
         supabase.table("opportunities").delete().eq("status", "expired").lt("expired_at", cutoff_30d).execute()
@@ -422,6 +429,7 @@ def main():
     except Exception as e:
         print(f"  [cleanup expired error] {e}")
 
+    # STEP 2: valuta opportunità attive esistenti
     existing = fetch_existing_opportunities(supabase)
     active_existing = [o for o in existing if o.get("status", "active") == "active"]
     print(f"[opportunities] Esistenti attive: {len(active_existing)}")
@@ -444,20 +452,21 @@ def main():
         except Exception as e:
             print(f"  [expire error] {opp_id}: {e}")
 
+    # STEP 3: genera nuove
     existing_tickers_by_cat = {}
     for opp in to_keep:
         cat = opp["category"]
         existing_tickers_by_cat.setdefault(cat, set()).add(opp["ticker"])
 
-    crolli = compute_crolli(prices_data, news_text=news_text, top_n=10)
+    crolli = compute_crolli(prices_data, news_text=news_text, top_n=15)
     crolli = [c for c in crolli if c["ticker"] not in existing_tickers_by_cat.get("crolli", set())]
     print(f"[opportunities] Crolli nuovi: {len(crolli)}")
 
-    beneficiari = compute_beneficiari(news, prices_data, top_n=6)
+    beneficiari = compute_beneficiari(news, prices_data, top_n=10)
     beneficiari = [b for b in beneficiari if b["ticker"] not in existing_tickers_by_cat.get("beneficiari", set())]
     print(f"[opportunities] Eventi favorevoli nuovi: {len(beneficiari)}")
 
-    sottovalutati = compute_sottovalutati(prices_data, news_text=news_text, top_n=6)
+    sottovalutati = compute_sottovalutati(prices_data, news_text=news_text, top_n=10)
     sottovalutati = [s for s in sottovalutati if s["ticker"] not in existing_tickers_by_cat.get("sottovalutati", set())]
     print(f"[opportunities] Sottovalutati nuovi: {len(sottovalutati)}")
 
