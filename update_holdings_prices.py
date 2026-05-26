@@ -119,8 +119,8 @@ def fetch_yfinance(ticker):
 
 
 def save_prices(supabase, prices):
-    """Salva i prezzi nella tabella `prices` con insert (mantiene storico)."""
-    return supabase.table("prices").insert(prices).execute()
+    """Upsert dei prezzi nella tabella `prices` (sovrascrive l'ultimo per ticker)."""
+    return supabase.table("prices").upsert(prices, on_conflict="ticker").execute()
 
 
 def main():
