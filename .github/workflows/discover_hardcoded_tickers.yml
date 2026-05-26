@@ -2,6 +2,11 @@ name: Discover Hardcoded Tickers
 
 on:
   workflow_dispatch:
+    inputs:
+      appjsx_path:
+        description: 'Path manuale ad App.jsx (lasciare vuoto per auto-detect)'
+        required: false
+        default: ''
 
 jobs:
   discover:
@@ -9,6 +14,15 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+
+      - name: Find App.jsx
+        run: |
+          echo "Path comuni:"
+          ls -la App.jsx 2>/dev/null || true
+          ls -la src/App.jsx 2>/dev/null || true
+          ls -la frontend/src/App.jsx 2>/dev/null || true
+          echo "Tutti gli App.jsx nel repo:"
+          find . -name "App.jsx" -not -path "*/node_modules/*" -not -path "*/.git/*"
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -19,6 +33,8 @@ jobs:
         run: pip install yfinance
 
       - name: Run discovery
+        env:
+          APPJSX_PATH: ${{ github.event.inputs.appjsx_path }}
         run: python discover_hardcoded_tickers.py
 
       - name: Upload CSV
