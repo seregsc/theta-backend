@@ -1,0 +1,29 @@
+name: Discover Hardcoded Tickers
+
+on:
+  workflow_dispatch:
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: pip install yfinance
+
+      - name: Run discovery
+        run: python discover_hardcoded_tickers.py
+
+      - name: Upload CSV
+        uses: actions/upload-artifact@v4
+        with:
+          name: hardcoded-tickers-classified
+          path: /tmp/hardcoded_tickers_classified.csv
+          if-no-files-found: warn
