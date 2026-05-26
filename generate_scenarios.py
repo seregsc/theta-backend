@@ -49,7 +49,8 @@ def build_news_context(news_items):
         title = n.get("title_it") or "—"
         impact = (n.get("impact_it") or "")[:150]
         lines.append(f"- {title} — {impact}")
-    return "\n".join(lines)
+    return "\
+".join(lines)
 
 
 def build_avoid_list(existing):
@@ -60,14 +61,16 @@ def build_avoid_list(existing):
         title = s.get("title") or ""
         desc = (s.get("description") or "")[:80]
         lines.append(f"- {title}: {desc}")
-    return "\n".join(lines)
+    return "\
+".join(lines)
 
 
 def parse_response(text):
     """Estrae il singolo oggetto JSON dalla risposta."""
     text = text.strip()
     if text.startswith("```"):
-        first_newline = text.find("\n")
+        first_newline = text.find("\
+")
         if first_newline > 0:
             text = text[first_newline + 1:]
         if text.endswith("```"):
@@ -246,11 +249,13 @@ def main():
 
     print("1. Recupero contesto news recenti...")
     news = fetch_recent_news_context(supabase, limit=10)
-    print(f"   {len(news)} news\n")
+    print(f"   {len(news)} news\
+")
 
     print("2. Recupero scenari già esistenti (per evitare duplicati)...")
     existing = fetch_existing_scenario_titles(supabase, limit=60)
-    print(f"   {len(existing)} scenari nel database\n")
+    print(f"   {len(existing)} scenari nel database\
+")
 
     news_context = build_news_context(news) if news else "(nessuna news disponibile)"
     avoid_list = build_avoid_list(existing)
@@ -266,13 +271,16 @@ def main():
     n_sectors = len(scenario.get("affected_sectors") or [])
     n_winners = len(scenario.get("winners") or [])
     n_losers = len(scenario.get("losers") or [])
-    print(f"   {n_sectors} settori, {n_winners} winners, {n_losers} losers\n")
+    print(f"   {n_sectors} settori, {n_winners} winners, {n_losers} losers\
+")
 
     print("4. Salvo nel database...")
     if save_scenario(supabase, scenario):
-        print(f"\n   Scenario salvato con successo.")
+        print(f"\
+   Scenario salvato con successo.")
     else:
-        print(f"\n   Errore nel salvataggio.")
+        print(f"\
+   Errore nel salvataggio.")
 
 
 if __name__ == "__main__":
