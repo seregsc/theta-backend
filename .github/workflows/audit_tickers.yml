@@ -1,0 +1,32 @@
+name: Audit Tickers (one-shot diagnostic)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: pip install supabase
+
+      - name: Run audit
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python audit_tickers.py
+
+      - name: Upload CSV results
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-tickers-results
+          path: /tmp/audit_tickers_results.csv
+          if-no-files-found: warn
