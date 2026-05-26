@@ -1,28 +1,44 @@
 """
-Discover Hardcoded Tickers — estrae tutti i ticker hardcoded da src/App.jsx
+Discover Hardcoded Tickers — estrae tutti i ticker hardcoded da App.jsx
 e li testa con yfinance per categorizzarli:
 
   A) WORKING: yfinance restituisce dati → da aggiungere al backfill
   B) FAILED:  yfinance non riconosce → fondi italiani/proprietari, gestire a UI
 
+Cerca App.jsx automaticamente. Accetta anche path da env APPJSX_PATH.
 Esecuzione: python discover_hardcoded_tickers.py
-Output: stampa risultati + salva CSV /tmp/hardcoded_tickers_classified.csv
 """
 
 import re
 import csv
 import time
 import os
+import sys
 import yfinance as yf
-
-# Path dell'App.jsx — assumiamo sia nel repo, in src/ (modifica se altrove)
-APPJSX_CANDIDATES = ["src/App.jsx", "App.jsx", "frontend/src/App.jsx"]
 
 
 def find_appjsx():
-    for p in APPJSX_CANDIDATES:
+    """Cerca App.jsx in tutto il repo (esclusi node_modules/.git/dist/build)."""
+    # 1) Override via env
+    env_path = os.environ.get("APPJSX_PATH")
+    if env_path and os.path.exists(env_path):
+        return env_path
+
+    # 2) Path comuni
+    common = [
+        "App.jsx", "src/App.jsx", "frontend/src/App.jsx",
+        "client/src/App.jsx", "web/src/App.jsx", "app/src/App.jsx",
+    ]
+    for p in common:
         if os.path.exists(p):
             return p
+
+    # 3) Fallback: walk del filesystem
+    excluded = {"node_modules", ".git", "dist", "build", ".next", "venv", ".venv", "__pycache__"}
+    for root, dirs, files in os.walk(".", followlinks=False):
+        dirs[:] = [d for d in dirs if d not in excluded]
+        if "App.jsx" in files:
+            return os.path.join(root, "App.jsx")
     return None
 
 
@@ -30,24 +46,20 @@ def extract_tickers_from_appjsx(path):
     """Estrae tutti i valori dopo 'ticker: "..."' nel file."""
     with open(path, "r", encoding="utf-8") as f:
         content = f.read()
-    # Pattern: ticker: "XXX"  (con o senza spazi)
     matches = re.findall(r'ticker:\s*"([^"]+)"', content)
     return sorted(set(matches))
 
 
-def test_yfinance(ticker, max_retries=1):
+def test_yfinance(ticker):
     """Veloce: prova history 5 giorni. Se ritorna almeno 1 riga → working."""
-    for attempt in range(max_retries + 1):
-        try:
-            t = yf.Ticker(ticker)
-            hist = t.history(period="5d", interval="1d", auto_adjust=False)
-            if not hist.empty:
-                return True, len(hist), float(hist["Close"].iloc[-1])
-            return False, 0, None
-        except Exception:
-            if attempt == max_retries:
-                return False, 0, None
-            time.sleep(0.3)
+    try:
+        t = yf.Ticker(ticker)
+        hist = t.history(period="5d", interval="1d", auto_adjust=False)
+        if not hist.empty:
+            return True, len(hist), float(hist["Close"].iloc[-1])
+        return False, 0, None
+    except Exception:
+        return False, 0, None
 
 
 def main():
@@ -57,8 +69,10 @@ def main():
 
     path = find_appjsx()
     if not path:
-        print(f"⚠ App.jsx non trovato. Cercato in: {APPJSX_CANDIDATES}")
-        return
+        print("⚠ App.jsx non trovato in nessuno dei path comuni né nel walk.")
+        print("  Imposta env APPJSX_PATH per specificarlo, oppure controlla nel repo:")
+        print("    find . -name 'App.jsx' -not -path '*/node_modules/*'")
+        sys.exit(1)
     print(f"📄 Sorgente: {path}")
 
     tickers = extract_tickers_from_appjsx(path)
@@ -101,7 +115,6 @@ def main():
     print("=" * 70)
     print()
     working_tickers = sorted([w["ticker"] for w in working])
-    # Print in batch di 4 per riga
     for i in range(0, len(working_tickers), 4):
         batch = working_tickers[i:i+4]
         print("    " + ", ".join(f'"{t}"' for t in batch) + ",")
