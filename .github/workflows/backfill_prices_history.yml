@@ -1,0 +1,30 @@
+name: Backfill Prices History
+
+on:
+  schedule:
+    # Ogni notte alle 22:00 UTC (= 23:00 IT inverno / 00:00 IT estate)
+    # Dopo chiusura Wall Street (22:00 IT)
+    - cron: '0 22 * * *'
+  workflow_dispatch:
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run backfill
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python backfill_prices_history.py
