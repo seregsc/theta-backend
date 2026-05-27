@@ -181,7 +181,8 @@ OUTPUT — rispondi SOLO con array JSON, senza markdown, senza commenti:
 [
   {{
     "external_id": "blackrock-q2-2026-outlook",
-    "title": "Titolo originale dell'articolo",
+    "title": "Titolo originale dell'articolo (anche in inglese se l'originale è inglese)",
+    "title_it": "Titolo italiano d'impatto, comprensibile, max 12 parole — DEVE far capire al consulente di cosa parla l'articolo. Esempio: invece di 'Q2 2026 Investment Outlook' scrivi 'Outlook trimestrale: dove BlackRock vede valore nel Q2 2026'. Esempio: invece di 'Beyond the Magnificent 7' scrivi 'Oltre i Magnificent 7: dove cercare i prossimi vincitori in azionario USA'.",
     "source": "BlackRock Investment Institute",
     "author": "BlackRock Research Team",
     "published_date": "2026-04-15",
@@ -199,6 +200,15 @@ OUTPUT — rispondi SOLO con array JSON, senza markdown, senza commenti:
   }},
   ...
 ]
+
+REGOLA CRITICA SU title_it:
+- È OBBLIGATORIO per OGNI articolo
+- DEVE essere in italiano, anche se l'articolo è in inglese
+- DEVE far capire IMMEDIATAMENTE al consulente di cosa parla — niente titoli vaghi tipo "Strategy Update" o "Market Outlook"
+- Lunghezza ideale: 8-12 parole
+- Stile: chiaro, professionale, d'impatto. Come un titolo di Plus24 o Milano Finanza
+- Esempi BUONI: "Tassi al 3,75%: la BCE pronta a una pausa lunga", "Oro sopra $3.000: cosa cambia per i portafogli prudenti", "Private markets: gli errori più frequenti sui clienti HNW"
+- Esempi CATTIVI: "Q1 Outlook", "Market Review", "Investment Insights"
 
 COLORI per category (usa esattamente questi):
 - strategia → "#0ea5e9" (blu)
@@ -239,10 +249,13 @@ Genera la lista adesso."""
 
 def validate_article(a):
     """Valida un articolo prima del salvataggio."""
-    required = ["external_id", "title", "source", "published_date", "category", "format", "source_url"]
+    required = ["external_id", "title", "title_it", "source", "published_date", "category", "format", "source_url"]
     for field in required:
         if not a.get(field):
             return False, f"campo mancante: {field}"
+    # title_it deve essere ragionevole (almeno 5 caratteri, non identico al title se title è in inglese)
+    if len(a.get("title_it", "")) < 5:
+        return False, "title_it troppo corto"
     try:
         datetime.strptime(a["published_date"], "%Y-%m-%d")
     except ValueError:
@@ -264,6 +277,7 @@ def save_article(supabase, a):
     row = {
         "external_id": a.get("external_id"),
         "title": a.get("title"),
+        "title_it": a.get("title_it"),
         "source": a.get("source"),
         "author": a.get("author"),
         "published_date": a.get("published_date"),
