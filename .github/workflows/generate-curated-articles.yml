@@ -1,0 +1,31 @@
+name: Generate Curated Articles
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Ogni lunedì alle 07:00 italiane (06:00 UTC d'inverno / 05:00 UTC d'estate).
+    # Sfalsato di 1 ora rispetto agli altri workflow del lunedì per non saturare la API.
+    - cron: '0 6 * * 1'
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run curated articles generation
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python generate_curated_articles.py
