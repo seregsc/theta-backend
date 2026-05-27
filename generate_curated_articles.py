@@ -170,7 +170,7 @@ REGOLE
 2. NO contenuti vecchi, scaduti o paywall completamente bloccati.
 3. Bilancia il mix: almeno 3 articoli leggeri (italiani), 3 ricerche pesanti (inglesi), 1-2 paper accademici, 1-2 podcast.
 4. Bilancia anche le categorie: non più di 3 articoli sulla stessa categoria.
-5. Se trovi l'og:image o un'immagine di copertina nell'URL/anteprima, includila in image_url.
+5. **IMMAGINE OBBLIGATORIA**: per ogni articolo DEVI includere image_url con un'immagine reale e raggiungibile. Cercala attivamente: og:image della pagina, immagine di copertina del paper, banner del podcast, screenshot di apertura del video. Se davvero non riesci a trovare un'immagine, includi comunque image_url settato al logo del publisher (es. "https://logo.clearbit.com/blackrock.com" per BlackRock, "https://logo.clearbit.com/morningstar.com" per Morningstar, ecc.). NON lasciare image_url null/vuoto: ogni card SENZA immagine sembra rotta nell'app.
 6. reading_time: stima realistica in minuti (1500 parole = ~7 min).
 7. summary: 2-3 frasi che spieghino DI COSA parla l'articolo.
 8. why_relevant: 1-2 frasi che spieghino PERCHÉ il consulente dovrebbe leggerlo.
