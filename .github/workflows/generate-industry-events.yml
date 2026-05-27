@@ -1,0 +1,31 @@
+name: Generate Industry Events
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Ogni lunedì alle 06:00 italiane (04:00 UTC d'estate, 05:00 UTC d'inverno).
+    # Usiamo 05:00 UTC come compromesso (= 07:00 d'estate, 06:00 d'inverno italiane).
+    - cron: '0 5 * * 1'
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run industry events generation
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python generate_industry_events.py
