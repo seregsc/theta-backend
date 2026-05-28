@@ -1,9 +1,18 @@
 name: Immagini News
 
 on:
+  # Parte AUTOMATICAMENTE quando finisce il workflow che carica le news.
+  # Si attiva quando termina il workflow "fetch news".
+  workflow_run:
+    workflows: ["fetch news"]
+    types:
+      - completed
+
+  # Avvio manuale sempre disponibile (Actions -> Immagini News -> Run workflow)
   workflow_dispatch:
+
+  # Rete di sicurezza: ogni 6 ore, nel caso qualcosa sfugga
   schedule:
-    # Ogni 6 ore (le news arrivano spesso)
     - cron: "15 */6 * * *"
 
 jobs:
@@ -25,5 +34,5 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          MAX_IMAGES: "30"
+          MAX_IMAGES: "60"
         run: python generate_news_images.py
