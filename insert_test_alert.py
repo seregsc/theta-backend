@@ -7,7 +7,7 @@ Genera client_actions sui clienti REALI di ogni utente, così il layout è popol
 in modo realistico. NON usa l'AI: è tutto hardcoded, costo zero, immediato.
 
 Per RIMUOVERE l'allerta di test dopo i controlli:
-  - su Supabase SQL Editor:  DELETE FROM live_alerts WHERE trigger_news_id = 'TEST-ALERT';
+  - su Supabase SQL Editor:  DELETE FROM live_alerts WHERE trigger_news_id = -1;
   - oppure rilancia con CLEANUP=1 (cancella solo le allerte di test, non quelle vere)
 
 Variabili: SUPABASE_URL, SUPABASE_KEY
@@ -22,7 +22,7 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 CLEANUP = os.environ.get("CLEANUP", "0") == "1"
 
-TEST_MARKER = "TEST-ALERT"  # marcatore per riconoscere/rimuovere le allerte di test
+TEST_MARKER = -1  # id news fittizio (i veri id sono positivi), per riconoscere/rimuovere i test
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     print("⚠ SUPABASE_URL o SUPABASE_KEY non configurati")
@@ -132,7 +132,7 @@ def main():
 
     print(f"\n✓ Completato. Allerte di test create: {created}")
     print("Per rimuoverle: rilancia con CLEANUP=1 oppure esegui in SQL:")
-    print(f"  DELETE FROM live_alerts WHERE trigger_news_id = '{TEST_MARKER}';")
+    print(f"  DELETE FROM live_alerts WHERE trigger_news_id = {TEST_MARKER};")
 
 
 if __name__ == "__main__":
