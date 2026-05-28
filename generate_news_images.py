@@ -1,16 +1,13 @@
 """
-Genera un'immagine AI per le news che non ne hanno ancora una (nel campo ai_image_url),
-usando Pollinations.ai (GRATUITO), la carica su Supabase Storage e salva l'URL.
+Genera immagini AI per le news che non ne hanno ancora una (campo ai_image_url),
+usando Pollinations.ai (GRATUITO). Le carica su Supabase Storage e salva l'URL.
 
-L'app preferisce ai_image_url alla foto della fonte, quindi tutte le news elaborate
-mostreranno l'immagine AI nell'hero.
+VERSIONE VELOCE: genera le immagini IN PARALLELO (più news insieme), così
+le news appena caricate ottengono l'immagine in pochi secondi invece che in minuti.
+Elabora prima le PIÙ RECENTI.
 
-Servono solo:
-  SUPABASE_URL, SUPABASE_KEY   (già presenti)
-
-Su Supabase serve:
-  1) una colonna `ai_image_url` (tipo text) nella tabella news
-  2) un bucket di Storage PUBBLICO chiamato come BUCKET_NAME (sotto)
+Servono: SUPABASE_URL, SUPABASE_KEY
+Su Supabase: colonna `ai_image_url` (text) nella tabella news + bucket pubblico `news-images`.
 """
 
 import os
@@ -18,13 +15,16 @@ import sys
 import time
 import urllib.parse
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from supabase import create_client
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
-# Quante news (più recenti senza immagine AI) elaborare per esecuzione.
-MAX_IMAGES = int(os.environ.get("MAX_IMAGES", "30"))
+# Quante news elaborare per esecuzione (le più recenti senza immagine).
+MAX_IMAGES = int(os.environ.get("MAX_IMAGES", "12"))
+# Quante generare in parallelo.
+PARALLEL = int(os.environ.get("PARALLEL", "6"))
 
 BUCKET_NAME = "news-images"
 
@@ -38,14 +38,12 @@ def build_prompt(news):
     summary = (news.get("summary_it") or news.get("summary") or "").strip()
     category = (news.get("category") or "").strip()
     summary_short = summary[:200]
-
     theme = {
         "azioni": "stock market, corporate finance",
         "macroeconomia": "macro economy, central banks, global finance",
         "geopolitica": "geopolitics, world map, international tension",
         "materie_prime": "commodities, energy, raw materials",
     }.get(category, "financial markets")
-
     return (
         f"Editorial conceptual illustration for a financial news article. "
         f"Theme: {title}. Context: {summary_short}. Field: {theme}. "
@@ -68,16 +66,16 @@ def generate_image_bytes(prompt, seed):
         f"?width=1280&height=720&nologo=true&model=flux&seed={seed}"
     )
     last_err = None
-    for attempt in range(3):
+    for attempt in range(2):
         try:
-            r = requests.get(url, timeout=180)
+            r = requests.get(url, timeout=90)
             if r.status_code == 200 and r.content and len(r.content) > 1000:
                 return r.content
-            last_err = f"HTTP {r.status_code}, {len(r.content) if r.content else 0} byte"
+            last_err = f"HTTP {r.status_code}"
         except Exception as e:
             last_err = str(e)
-        time.sleep(5 * (attempt + 1))
-    raise RuntimeError(f"Pollinations non ha risposto: {last_err}")
+        time.sleep(3)
+    raise RuntimeError(f"Pollinations ko: {last_err}")
 
 
 def upload_to_storage(supabase, news_id, image_bytes):
@@ -101,11 +99,26 @@ def upload_to_storage(supabase, news_id, image_bytes):
     return public
 
 
+def process_one(supabase, n):
+    nid = n.get("id")
+    title = (n.get("title_it") or n.get("title") or "—")[:50]
+    try:
+        prompt = build_prompt(n)
+        img = generate_image_bytes(prompt, seed_from_id(nid))
+        url = upload_to_storage(supabase, nid, img)
+        if not url:
+            return (nid, title, False, "URL vuoto")
+        supabase.table("news").update({"ai_image_url": url}).eq("id", nid).execute()
+        return (nid, title, True, "")
+    except Exception as e:
+        return (nid, title, False, str(e)[:120])
+
+
 def main():
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
     print("=" * 60)
-    print("GENERAZIONE IMMAGINI NEWS (Pollinations - gratuito)")
+    print(f"IMMAGINI NEWS (parallelo x{PARALLEL}, max {MAX_IMAGES})")
     print("=" * 60)
 
     res = (
@@ -118,31 +131,21 @@ def main():
         .execute()
     )
     rows = res.data or []
-
     if not rows:
-        print("Nessuna news da elaborare (tutte hanno già un'immagine AI).")
+        print("Nessuna news da elaborare.")
         return
 
     print(f"News da elaborare: {len(rows)}\n")
-
     done = 0
-    for n in rows:
-        nid = n.get("id")
-        title = n.get("title_it") or n.get("title") or "—"
-        print(f"  → [{nid}] {title[:50]}")
-        try:
-            prompt = build_prompt(n)
-            img = generate_image_bytes(prompt, seed_from_id(nid))
-            url = upload_to_storage(supabase, nid, img)
-            if not url:
-                print("    ✗ URL pubblico vuoto, salto")
-                continue
-            supabase.table("news").update({"ai_image_url": url}).eq("id", nid).execute()
-            print(f"    ✓ immagine salvata")
-            done += 1
-            time.sleep(1)
-        except Exception as e:
-            print(f"    ✗ errore: {str(e)[:200]}")
+    with ThreadPoolExecutor(max_workers=PARALLEL) as ex:
+        futures = [ex.submit(process_one, supabase, n) for n in rows]
+        for f in as_completed(futures):
+            nid, title, ok, err = f.result()
+            if ok:
+                done += 1
+                print(f"  ✓ [{nid}] {title}")
+            else:
+                print(f"  ✗ [{nid}] {title} — {err}")
 
     print(f"\n✓ Completato. Immagini generate: {done}/{len(rows)}")
 
