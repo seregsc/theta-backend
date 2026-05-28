@@ -247,12 +247,13 @@ ISTRUZIONI
 ═══════════════════════════════════
 Genera UN solo alert operativo:
 
-1. SUMMARY: spiegazione operativa di cosa è successo, perché è grave, cosa succederà 24-72h
-2. SETTORI COLPITI: lista ID (ai, auto, defense, gold, energy, ecc.)
-3. SETTORI BENEFICIARI: lista settori che potrebbero salire
-4. ASSET TRIGGERATI (negativi/positivi): ticker che caleranno/saliranno
-5. AZIONI BOOK-LEVEL: 3-5 azioni generiche
-6. AZIONI PER CLIENTE: per OGNI cliente analizza esposizione e proponi azioni operative numeriche (tipo vendere/comprare/coprire, descrizione, importo EUR, ragionamento).
+1. SUMMARY: spiegazione APPROFONDITA e in linguaggio semplice di cosa è successo, perché è grave, e cosa succederà nelle prossime 24-72h. 4-6 frasi.
+2. POSSIBILI SVILUPPI: 3-5 scenari concreti di cosa potrebbe accadere ORA come conseguenza (es. "Taiwan chiede aiuto militare agli USA", "sanzioni reciproche", "intervento banche centrali"). Per ciascuno: titolo breve, descrizione di 1 frase, e probabilità (Alta/Media/Bassa).
+3. SETTORI COLPITI: lista ID (ai, auto, defense, gold, energy, ecc.)
+4. SETTORI BENEFICIARI: lista settori che potrebbero salire
+5. ASSET TRIGGERATI (negativi/positivi): ticker che caleranno/saliranno
+6. AZIONI BOOK-LEVEL: 3-5 azioni generiche
+7. AZIONI PER CLIENTE: per OGNI cliente analizza esposizione e proponi azioni operative numeriche (tipo vendere/comprare/coprire, descrizione, importo EUR, ragionamento). Usa linguaggio semplice e comprensibile.
 
 Cita asset REALI dei clienti per nome. Azioni CONCRETE con numeri. Lessico semplice.
 
@@ -261,7 +262,14 @@ FORMATO OUTPUT (SOLO JSON)
 ═══════════════════════════════════
 {{
   "title": "Titolo conciso max 90 char",
-  "summary": "3-5 frasi sul cosa e perché",
+  "summary": "4-6 frasi sul cosa, perché è grave e cosa succederà",
+  "possible_next_events": [
+    {{
+      "title": "Cosa potrebbe succedere ora (breve)",
+      "description": "1 frase di spiegazione",
+      "likelihood": "Alta | Media | Bassa"
+    }}
+  ],
   "sources": ["Reuters", "Bloomberg"],
   "affected_sectors": ["ai", "auto"],
   "beneficiary_sectors": ["defense", "gold"],
@@ -331,6 +339,7 @@ def save_alert(supabase, user_id, news_item, analysis, severity):
         "trigger_news_id": news_item.get("id"),
         "title": analysis.get("title") or news_item.get("title_it"),
         "summary": analysis.get("summary") or news_item.get("summary_it"),
+        "possible_next_events": analysis.get("possible_next_events") or [],
         "sources": analysis.get("sources") or [news_item.get("source", "—")],
         "affected_sectors": analysis.get("affected_sectors") or [],
         "beneficiary_sectors": analysis.get("beneficiary_sectors") or [],
