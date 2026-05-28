@@ -1,0 +1,31 @@
+name: Allerta di Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      cleanup:
+        description: "Metti 1 per RIMUOVERE le allerte di test invece di crearle"
+        required: false
+        default: "0"
+
+jobs:
+  test-alert:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install supabase
+
+      - name: Run insert_test_alert.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          CLEANUP: ${{ github.event.inputs.cleanup }}
+        run: python insert_test_alert.py
