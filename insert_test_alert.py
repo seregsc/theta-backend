@@ -96,11 +96,38 @@ def main():
             "title": "[TEST] Escalation militare Cina-Taiwan: blocco navale in corso",
             "summary": (
                 "Questa è un'allerta di TEST per verificare il layout. "
-                "La Cina ha avviato un blocco navale attorno a Taiwan e i mercati asiatici "
-                "aprono in forte ribasso. I semiconduttori taiwanesi (TSMC su tutti) sono "
-                "sotto pressione estrema. Nelle prossime 24-72h è atteso un aumento della "
-                "volatilità globale e una rotazione verso beni rifugio e difesa."
+                "La Cina ha avviato un blocco navale attorno a Taiwan, schierando la marina "
+                "nello Stretto e bloccando di fatto il traffico commerciale. È l'escalation più "
+                "grave dell'ultimo decennio. I mercati asiatici aprono in forte ribasso e il rischio "
+                "è una paralisi della catena di fornitura globale dei semiconduttori: Taiwan, tramite "
+                "TSMC, produce circa il 65% dei chip mondiali e oltre il 90% di quelli più avanzati. "
+                "Perché è grave: un blocco prolungato fermerebbe la produzione di chip per auto, "
+                "smartphone, data center e AI, con effetti a catena su quasi tutti i settori. "
+                "Nelle prossime 24-72h è atteso un forte aumento della volatilità, vendite su tech e "
+                "semiconduttori, e una corsa verso beni rifugio (oro, treasury) e titoli della difesa."
             ),
+            "possible_next_events": [
+                {
+                    "title": "Taiwan chiede aiuto militare agli USA",
+                    "description": "Probabile richiesta formale di supporto a Washington. Una risposta americana diretta aumenterebbe drasticamente il rischio di confronto tra grandi potenze.",
+                    "likelihood": "Alta",
+                },
+                {
+                    "title": "Sanzioni economiche reciproche USA-Cina",
+                    "description": "Possibile blocco delle esportazioni di chip e contromisure cinesi sulle terre rare, con ulteriore frammentazione delle catene di fornitura.",
+                    "likelihood": "Alta",
+                },
+                {
+                    "title": "Intervento delle banche centrali",
+                    "description": "Fed e BCE potrebbero intervenire con liquidità di emergenza se la volatilità minaccia la stabilità finanziaria.",
+                    "likelihood": "Media",
+                },
+                {
+                    "title": "Picco del prezzo dell'oro e del petrolio",
+                    "description": "Corsa ai beni rifugio e timori sulle rotte energetiche asiatiche potrebbero spingere oro e greggio su nuovi massimi.",
+                    "likelihood": "Media",
+                },
+            ],
             "sources": ["Reuters", "Bloomberg"],
             "affected_sectors": ["ai", "semis", "auto", "tech"],
             "beneficiary_sectors": ["defense", "gold", "energy"],
