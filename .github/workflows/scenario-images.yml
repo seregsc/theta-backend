@@ -1,0 +1,29 @@
+name: Immagini Scenari
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Ogni giorno alle 5:30 UTC (poco dopo la generazione degli scenari)
+    - cron: "30 5 * * *"
+
+jobs:
+  scenario-images:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install supabase requests
+
+      - name: Run generate_scenario_images.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          MAX_IMAGES: "10"
+        run: python generate_scenario_images.py
