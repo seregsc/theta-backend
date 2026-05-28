@@ -1,0 +1,29 @@
+name: Immagini News
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Ogni 6 ore (le news arrivano spesso)
+    - cron: "15 */6 * * *"
+
+jobs:
+  news-images:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install supabase requests
+
+      - name: Run generate_news_images.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          MAX_IMAGES: "30"
+        run: python generate_news_images.py
