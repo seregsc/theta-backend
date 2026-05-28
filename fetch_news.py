@@ -9,7 +9,10 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 
-MODEL = "claude-sonnet-4-5"
+# Nome modello VALIDO (con suffisso data). Senza data l'API va in errore
+# e la traduzione italiana fallisce silenziosamente -> title_it resta null
+# e le news non appaiono su Theta.
+MODEL = "claude-sonnet-4-5-20250929"
 TICKERS = ["AAPL", "MSFT", "NVDA", "TSLA", "GOOGL", "META", "AMZN", "SPY"]
 
 
@@ -78,10 +81,8 @@ def clean_image_url(url):
     url = url.strip()
     if not url:
         return None
-    # Verifica che sia un URL http(s) valido
     if not (url.startswith("http://") or url.startswith("https://")):
         return None
-    # Filtri base: niente placeholder generici
     placeholders = ["placeholder", "default", "no-image", "blank.jpg", "blank.png"]
     url_lower = url.lower()
     if any(p in url_lower for p in placeholders):
@@ -179,8 +180,12 @@ STRATEGIA: <suggerimento operativo di 3-4 frasi (350-550 caratteri) per un consu
 
 def upsert_news(supabase, news_items, anthropic_client):
     """Salva le news nuove e aggiorna quelle esistenti senza analisi italiana completa.
-    Aggiunge anche backfill di image_url per news esistenti che non ce l'hanno."""
-    new_count, updated_count, backfill_count = 0, 0, 0
+    Aggiunge anche backfill di image_url per news esistenti che non ce l'hanno.
+
+    IMPORTANTE: se la traduzione italiana FALLISCE (title_it nullo) la news NON
+    viene salvata, altrimenti resterebbe invisibile su Theta (che filtra title_it).
+    Al giro successivo verrà ritentata."""
+    new_count, updated_count, backfill_count, skipped_count = 0, 0, 0, 0
 
     for item in news_items:
         ext_id = item.get("external_id")
@@ -198,7 +203,6 @@ def upsert_news(supabase, news_items, anthropic_client):
 
             # CASO A: analisi completa già esistente
             if has_complete_analysis:
-                # Backfill image_url se manca e ora ce l'abbiamo
                 if not current_image and new_image:
                     try:
                         supabase.table("news").update({"image_url": new_image}).eq("id", existing_row["id"]).execute()
@@ -221,17 +225,24 @@ def upsert_news(supabase, news_items, anthropic_client):
                     "impact_it": impact_it,
                     "strategy_it": strategy_it,
                 }
-                # Aggiungi image_url se mancava e ora ce l'abbiamo
                 if not current_image and new_image:
                     update_payload["image_url"] = new_image
                 supabase.table("news").update(update_payload).eq("id", existing_row["id"]).execute()
                 updated_count += 1
                 print(f"  ↻ aggiornata: {title_it[:60]}…")
+            else:
+                skipped_count += 1
+                print(f"  ⏭ saltata (traduzione fallita, riprovo al prossimo giro): {(item.get('title') or '')[:50]}…")
         else:
             # CASO C: news nuova → analisi e inserisci
             title_it, summary_it, impact_it, strategy_it = generate_full_analysis(
                 anthropic_client, item.get("title"), item.get("summary"), item.get("tickers")
             )
+            # Se la traduzione è fallita, NON salvare (altrimenti news invisibile su Theta)
+            if not title_it:
+                skipped_count += 1
+                print(f"  ⏭ saltata (traduzione fallita, riprovo al prossimo giro): {(item.get('title') or '')[:50]}…")
+                continue
             item["title_it"] = title_it
             item["summary_it"] = summary_it
             item["impact_it"] = impact_it
@@ -245,7 +256,7 @@ def upsert_news(supabase, news_items, anthropic_client):
             except Exception as e:
                 print(f"  ✗ errore salvataggio: {e}")
 
-    return new_count, updated_count, backfill_count
+    return new_count, updated_count, backfill_count, skipped_count
 
 
 def main():
@@ -261,8 +272,8 @@ def main():
     anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
     print("Analisi completa AI e salvataggio...")
-    new_count, updated_count, backfill_count = upsert_news(supabase, items, anthropic_client)
-    print(f"\n✓ {new_count} news nuove, {updated_count} aggiornate, {backfill_count} backfill immagini.")
+    new_count, updated_count, backfill_count, skipped_count = upsert_news(supabase, items, anthropic_client)
+    print(f"\n✓ {new_count} news nuove, {updated_count} aggiornate, {backfill_count} backfill immagini, {skipped_count} saltate.")
 
 
 if __name__ == "__main__":
