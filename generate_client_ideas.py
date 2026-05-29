@@ -71,19 +71,6 @@ def fetch_recent_news(supabase, days=7, limit=20):
         return []
 
 
-def fetch_active_scenarios(supabase, limit=5):
-    try:
-        res = supabase.table("scenarios_live") \
-            .select("title, description, severity, probability, time_horizon, winners, losers, hedge_strategy, affected_sectors") \
-            .order("generated_at", desc=True) \
-            .limit(limit) \
-            .execute()
-        return res.data or []
-    except Exception as e:
-        print(f"[scenarios fetch error] {e}")
-        return []
-
-
 def fetch_active_opportunities(supabase, limit=15):
     try:
         res = supabase.table("opportunities") \
@@ -155,46 +142,10 @@ def filter_relevant_news(news, holdings):
     return relevant
 
 
-def filter_relevant_scenarios(scenarios, holdings):
-    """Trova gli scenari attivi che impattano i settori/asset del cliente."""
-    if not scenarios or not holdings:
-        return []
-    client_tickers = {h["ticker"].upper() for h in holdings if h.get("ticker")}
-    client_sectors = {(h.get("sector") or "").lower() for h in holdings if h.get("sector")}
-    client_sectors.discard("")
-
-    relevant = []
-    for s in scenarios:
-        affected = s.get("affected_sectors") or []
-        if isinstance(affected, str):
-            affected = [affected]
-        affected_lower = {str(a).lower() for a in affected}
-        # match settore
-        sector_hit = bool(affected_lower & client_sectors) or any(
-            any(cs in a for cs in client_sectors if len(cs) > 3) for a in affected_lower
-        )
-        # match ticker in winners/losers
-        losers = s.get("losers") or []
-        winners = s.get("winners") or []
-        if isinstance(losers, str):
-            losers = [losers]
-        if isinstance(winners, str):
-            winners = [winners]
-        loser_tickers = {str(x).upper() for x in losers}
-        winner_tickers = {str(x).upper() for x in winners}
-        ticker_hit = bool((loser_tickers | winner_tickers) & client_tickers)
-        if sector_hit or ticker_hit:
-            relevant.append({
-                **s,
-                "_hits_losers": list(loser_tickers & client_tickers),
-                "_hits_winners": list(winner_tickers & client_tickers),
-            })
-    return relevant
-
-
-def build_prompt(client, holdings_enriched, total_value, cash_avail, news, scenarios, opportunities,
-                 relevant_news, relevant_scenarios):
-    """Costruisce il prompt per Claude Sonnet con CROSS-CHECK TOTALE."""
+def build_prompt(client, holdings_enriched, total_value, cash_avail, news, opportunities,
+                 relevant_news):
+    """Costruisce il prompt per Claude Sonnet con CROSS-CHECK su profilo + obiettivo + news reali.
+    NB: gli scenari di stress test NON sono inclusi: sono eventi ipotetici, non fatti."""
     profile_map = {"conservativo": "prudente", "moderato": "moderato", "aggressivo": "aggressivo"}
     profile = profile_map.get(client.get("risk_profile"), "moderato")
     objective = client.get("objective", "crescita")
@@ -209,30 +160,18 @@ def build_prompt(client, holdings_enriched, total_value, cash_avail, news, scena
         for n in news[:10]
     ]) if news else "  (nessuna news recente)"
 
-    scenarios_str = "\n".join([
-        f"  - {s.get('title', '')[:80]} (severità {s.get('severity')}, prob {s.get('probability')})"
-        for s in scenarios[:3]
-    ]) if scenarios else "  (nessuno scenario attivo)"
-
     opportunities_str = "\n".join([
         f"  - [{o.get('category')}] {o.get('ticker')}: {(o.get('title') or '')[:100]} | conviction {o.get('conviction')}/100 | orizzonte {o.get('target_timing', 'n/d')}"
         for o in opportunities[:10]
     ]) if opportunities else "  (nessuna opportunità attiva)"
 
-    # ── Sezioni MIRATE: cosa tocca DIRETTAMENTE questo cliente ──
+    # ── News REALI che toccano DIRETTAMENTE questo cliente ──
     relevant_news_str = "\n".join([
         f"  - [{n.get('sentiment', 'neutro')}] {n.get('title_it', '')[:130]}"
         f"{(' | tocca: ' + ', '.join(n['_matched_tickers'])) if n.get('_matched_tickers') else ' | tocca un settore in portafoglio'}"
         f" | impatto: {(n.get('impact_it') or '')[:120]}"
         for n in relevant_news[:8]
     ]) if relevant_news else "  (nessuna news recente tocca direttamente gli asset di questo cliente)"
-
-    relevant_scenarios_str = "\n".join([
-        f"  - {s.get('title', '')[:90]} (severità {s.get('severity')})"
-        f"{(' | colpisce in portafoglio: ' + ', '.join(s['_hits_losers'])) if s.get('_hits_losers') else ''}"
-        f"{(' | favorisce in portafoglio: ' + ', '.join(s['_hits_winners'])) if s.get('_hits_winners') else ''}"
-        for s in relevant_scenarios[:5]
-    ]) if relevant_scenarios else "  (nessuno scenario attivo impatta direttamente questo cliente)"
 
     prompt = f"""Sei un consulente finanziario senior italiano. Devi generare IDEE PERSONALIZZATE per UN cliente specifico, da rivedere col cliente alla prossima riunione.
 
@@ -254,14 +193,9 @@ PORTAFOGLIO ATTUALE
 {holdings_str}
 
 ═══════════════════════════════════
-⚠ NEWS CHE TOCCANO DIRETTAMENTE QUESTO CLIENTE (priorità massima)
+⚠ NEWS REALI CHE TOCCANO DIRETTAMENTE QUESTO CLIENTE (priorità massima)
 ═══════════════════════════════════
 {relevant_news_str}
-
-═══════════════════════════════════
-⚠ ALLERTE/SCENARI ATTIVI CHE IMPATTANO QUESTO CLIENTE (priorità massima)
-═══════════════════════════════════
-{relevant_scenarios_str}
 
 ═══════════════════════════════════
 CONTESTO GENERALE DI MERCATO (news ultimi 7 giorni)
@@ -269,19 +203,14 @@ CONTESTO GENERALE DI MERCATO (news ultimi 7 giorni)
 {news_str}
 
 ═══════════════════════════════════
-SCENARI DI STRESS TEST GENERALI
-═══════════════════════════════════
-{scenarios_str}
-
-═══════════════════════════════════
 OPPORTUNITÀ DEL MERCATO (asset interessanti adesso)
 ═══════════════════════════════════
 {opportunities_str}
 
 ═══════════════════════════════════
-ISTRUZIONI — CROSS-CHECK TOTALE
+ISTRUZIONI — CROSS-CHECK
 ═══════════════════════════════════
-Prima di generare le idee, fai un controllo incrociato di TUTTO:
+Prima di generare le idee, fai un controllo incrociato di profilo, obiettivo e news reali:
 
 1. COERENZA PROFILO + OBIETTIVO (la regola più importante):
    - Il profilo di rischio "{profile}" è un VINCOLO: non proporre MAI mosse che lo abbassano sotto questo livello.
@@ -292,17 +221,13 @@ Prima di generare le idee, fai un controllo incrociato di TUTTO:
      crescita+aggressivo → equity tematico, growth, emergenti, small cap, tecnologia.
    - NON contraddirti tra le due categorie (non consigliare di comprare un asset in una e venderlo nell'altra).
 
-2. NEWS MACRO CHE TOCCANO IL CLIENTE:
+2. NEWS MACRO REALI CHE TOCCANO IL CLIENTE:
    - Se una news negativa recente colpisce un settore/asset che il cliente DETIENE, SEGNALALO.
      Esempio: news terribile sul settore AI + il cliente ha un ETF AI → segnala che quell'asset è "momentaneamente sotto pressione per motivi macro" e valuta se alleggerire o attendere.
    - Se una news positiva favorisce un asset del cliente, puoi suggerire di mantenere o incrementare.
+   - Basati SOLO su news reali fornite, mai su eventi ipotetici.
 
-3. ALLERTE/SCENARI ATTIVI:
-   - Se uno scenario attivo colpisce asset del cliente (compaiono tra i "colpisce in portafoglio"), un'idea che ignora quello scenario NON è valida.
-     Tieni conto dello scenario: o proponi una protezione coerente col profilo, o segnala il rischio nella motivazione.
-   - Non proporre di comprare di più un asset che è tra i "perdenti" di uno scenario attivo ad alta severità, a meno di una tesi forte.
-
-4. CONCRETEZZA:
+3. CONCRETEZZA:
    - Lessico SEMPLICE, frasi brevi (max 25 parole). Niente jargon: "drawdown" → "calo dal massimo"; "guidance" → "previsioni dell'azienda"; "buyback" → "riacquisto azioni proprie".
    - Numeri, percentuali, nomi di asset, motivazioni precise. Niente "diversifica di più" generico.
    - Considera la liquidità disponibile (se serve cash per comprare) e se l'asset esiste già in portafoglio.
@@ -312,7 +237,7 @@ Genera 3-6 idee TOTALI, divise in 2 categorie:
 - CATEGORIA A — MODIFICHE AL PORTAFOGLIO: azioni sui titoli già detenuti (vendi parziale, incrementa, alleggerisci, mantieni).
 - CATEGORIA B — NUOVE OPPORTUNITÀ: asset NON ancora in portafoglio, coerenti con profilo + obiettivo + diversificazione + liquidità.
 
-Quando un'idea è influenzata da una news o da uno scenario attivo, indicalo nel campo "macro_alert".
+Quando un'idea è influenzata da una news reale, indicalo nel campo "macro_alert".
 
 ═══════════════════════════════════
 FORMATO OUTPUT
@@ -352,7 +277,7 @@ Rispondi SOLO con JSON, nessun preambolo:
   ]
 }}
 
-Genera ORA le idee. Cliente: {client.get('name', '—')}, profilo {profile}, obiettivo {objective}. Cross-check totale, sii specifico, mai generico, mai contraddire profilo o scenari attivi."""
+Genera ORA le idee. Cliente: {client.get('name', '—')}, profilo {profile}, obiettivo {objective}. Cross-check su profilo, obiettivo e news reali. Sii specifico, mai generico, mai contraddire il profilo di rischio."""
 
     return prompt
 
@@ -381,7 +306,7 @@ def parse_response(text):
         return None
 
 
-def generate_ideas_for_client(anthropic_client, supabase, client, prices, news, scenarios, opportunities):
+def generate_ideas_for_client(anthropic_client, supabase, client, prices, news, opportunities):
     print(f"  → Elaboro cliente: {client.get('name', client['id'])}")
 
     holdings_raw = fetch_client_holdings(supabase, client["id"])
@@ -392,16 +317,13 @@ def generate_ideas_for_client(anthropic_client, supabase, client, prices, news, 
         print(f"    Cliente vuoto: salto.")
         return None
 
-    # Filtra news e scenari rilevanti PER QUESTO cliente (cross-check mirato)
+    # Filtra le news REALI rilevanti PER QUESTO cliente (cross-check mirato)
     relevant_news = filter_relevant_news(news, holdings)
-    relevant_scenarios = filter_relevant_scenarios(scenarios, holdings)
     if relevant_news:
         print(f"    {len(relevant_news)} news toccano gli asset del cliente")
-    if relevant_scenarios:
-        print(f"    {len(relevant_scenarios)} scenari attivi impattano il cliente")
 
-    prompt = build_prompt(client, holdings, total_value, cash_avail, news, scenarios, opportunities,
-                          relevant_news, relevant_scenarios)
+    prompt = build_prompt(client, holdings, total_value, cash_avail, news, opportunities,
+                          relevant_news)
 
     try:
         response = anthropic_client.messages.create(
@@ -454,9 +376,8 @@ def main():
 
     # Carica contesto di mercato UNA volta sola (uguale per tutti)
     news = fetch_recent_news(supabase, days=7, limit=20)
-    scenarios = fetch_active_scenarios(supabase, limit=5)
     opportunities = fetch_active_opportunities(supabase, limit=15)
-    print(f"[client_ideas] Contesto: {len(news)} news, {len(scenarios)} scenari, {len(opportunities)} opportunità")
+    print(f"[client_ideas] Contesto: {len(news)} news, {len(opportunities)} opportunità")
 
     # Carica tutti i clienti
     clients = fetch_all_clients(supabase)
@@ -469,7 +390,7 @@ def main():
     success = 0
     failed = 0
     for client in clients:
-        ideas = generate_ideas_for_client(anthropic_client, supabase, client, prices, news, scenarios, opportunities)
+        ideas = generate_ideas_for_client(anthropic_client, supabase, client, prices, news, opportunities)
         if ideas:
             snapshot = {
                 "generated_for_holdings_count": len(fetch_client_holdings(supabase, client["id"])),
