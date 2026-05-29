@@ -111,12 +111,28 @@ REGOLA CRITICA SULLE DATE (la piu importante):
 - Ricontrolla ogni published_date prima di scriverla: l'anno deve essere {current_year}, e il giorno/mese devono corrispondere esattamente a quanto riportato dalla fonte ufficiale.
 - effective_date (data di entrata in vigore) puo essere nel futuro: e l'unica data che puo superare oggi.
 
-REGOLA CRITICA SUL LINK (source_url):
-- source_url DEVE essere l'URL DIRETTO della pagina specifica del documento/comunicato (es. la pagina della singola delibera, del comunicato stampa, delle linee guida), NON la homepage generica del sito.
-- ESEMPIO SBAGLIATO: "https://www.consob.it" oppure "https://www.consob.it/web/area-pubblica/comunicati-stampa" (pagina indice).
-- ESEMPIO CORRETTO: "https://www.consob.it/web/area-pubblica/dettaglio-news?viewId=news_comunicato_xyz" (la pagina del singolo documento citato).
-- Prendi l'URL ESATTO dal risultato di ricerca web che hai usato per trovare quella specifica normativa. Deve portare l'utente direttamente al documento, non a una lista o alla home.
-- Se non hai un URL diretto al documento specifico ma solo la homepage, SCARTA quell'aggiornamento (non includerlo): un link generico non e utile al consulente.
+REGOLA CRITICA SUL LINK (source_url) - LEGGI CON ATTENZIONE:
+Il source_url DEVE puntare alla PAGINA ESATTA del singolo documento, non a una home o a una lista.
+
+COME OTTENERLO (procedura obbligatoria):
+1. Per OGNI normativa, fai una ricerca web mirata che includa il numero/titolo esatto del documento (es. "CONSOB delibera 23456 2026 testo", "ESMA guidelines suitability 2026 final report").
+2. Tra i risultati, scegli il link che porta DIRETTAMENTE al documento o alla sua pagina di dettaglio sul sito ufficiale dell'autorita.
+3. Copia l'URL ESATTO da quel risultato di ricerca. NON costruirlo a mano, NON accorciarlo, NON sostituirlo con la home.
+4. Un URL valido di solito contiene: un identificativo (numero, anno, slug del titolo), oppure un parametro query (?id=, ?viewId=, /dettaglio/, /documenti/, .pdf, ecc.).
+
+ESEMPI SBAGLIATI (da NON usare mai):
+- "https://www.consob.it"  (home)
+- "https://www.consob.it/web/area-pubblica/comunicati-stampa"  (lista)
+- "https://www.esma.europa.eu/news"  (lista)
+- "https://www.bancaditalia.it/media/comunicati"  (lista)
+
+ESEMPI CORRETTI:
+- "https://www.consob.it/web/area-pubblica/dettaglio-news?viewId=news_xyz"
+- "https://www.esma.europa.eu/document/guidelines-certain-aspects-mifid-ii-suitability-requirements-0"
+- "https://www.bancaditalia.it/pubblicazioni/bollettino-vigilanza/2026-05/index.html"
+- un link diretto a un PDF: "https://.../documento.pdf"
+
+REGOLA FINALE: se dopo la ricerca NON trovi un URL diretto al documento specifico (hai solo la home o una lista), SCARTA quell'aggiornamento. Meglio pubblicarne meno ma con link che funzionano davvero. Un link generico fa perdere tempo al consulente ed e considerato un errore grave.
 
 CATEGORIE da usare (esattamente uno tra questi, lowercase):
 - "mifid" -> MiFID, consulenza, suitability, product governance, profilatura
@@ -249,27 +265,58 @@ def validate_update(u):
     if u.get("impact_level") and u["impact_level"] not in valid_impact:
         return False, f"impact_level non valido: {u['impact_level']}"
 
-    # Rifiuta source_url che sono solo homepage o pagine-indice generiche.
-    # Un link utile deve puntare alla pagina del documento, non a una lista.
+    # source_url OBBLIGATORIO e deve puntare a un documento SPECIFICO, non a home/liste.
     src = (u.get("source_url") or "").strip()
-    if src:
-        from urllib.parse import urlparse
-        try:
-            parsed = urlparse(src)
-            path = (parsed.path or "").strip("/")
-            has_query = bool(parsed.query)  # un ?id=... di solito indica una pagina specifica
-            segments = [s for s in path.split("/") if s]
-            last = segments[-1].lower() if segments else ""
-            # Pagine indice/home da scartare (se l'URL finisce qui senza query specifica)
-            index_pages = {
-                "", "web", "home", "index", "index.html", "news", "media",
-                "comunicati", "comunicati-stampa", "ufficio-stampa", "normativa",
-                "area-pubblica", "press", "press-releases", "newsroom",
-            }
-            if not has_query and (last in index_pages or len(path) < 5):
-                return False, f"source_url troppo generico (homepage/indice): {src}"
-        except Exception:
-            pass
+    if not src:
+        return False, "source_url mancante"
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(src)
+    except Exception:
+        return False, f"source_url non valido: {src}"
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return False, f"source_url malformato: {src}"
+
+    path = (parsed.path or "").strip("/")
+    has_query = bool(parsed.query)  # ?id=, ?viewId= → tipico di pagine specifiche
+    segments = [s for s in path.split("/") if s]
+    last = segments[-1].lower() if segments else ""
+
+    # Pagine indice/home da rifiutare.
+    index_pages = {
+        "", "web", "home", "index", "index.html", "news", "media", "comunicati",
+        "comunicati-stampa", "ufficio-stampa", "normativa", "area-pubblica",
+        "press", "press-releases", "newsroom", "pubblicazioni", "documenti",
+        "documents", "publications", "news-and-events", "media-corner",
+        "comunicazioni", "avvisi", "novita", "it", "en",
+    }
+    if not has_query and (last in index_pages or len(path) < 5):
+        # Eccezione: "index.html" preceduto da segmenti con identificativi (anno, numero)
+        # indica comunque un documento specifico (es. .../2026-05/index.html).
+        intermediate_has_id = any(
+            (seg.isdigit() and len(seg) >= 3) or any(ch.isdigit() for ch in seg)
+            for seg in segments[:-1]
+        ) if len(segments) > 1 else False
+        if not (last == "index.html" and intermediate_has_id):
+            return False, f"source_url troppo generico (homepage/indice): {src}"
+
+    # Segnale di SPECIFICITA: il link deve avere almeno uno di questi indizi che
+    # punti a un singolo documento, altrimenti e probabilmente una lista.
+    src_low = src.lower()
+    has_specificity = (
+        has_query                                   # ?id=, ?viewId=, ?doc=
+        or src_low.endswith(".pdf")                 # PDF diretto
+        or any(seg.isdigit() and len(seg) >= 3 for seg in segments)  # numero documento/anno
+        or any(ch.isdigit() for ch in last) and len(last) >= 6       # slug con numero
+        or any(kw in src_low for kw in (
+            "dettaglio", "delibera", "regolamento", "comunicato-stampa-n",
+            "guidelines", "final-report", "consultation", "decreto",
+            "provvedimento", "circolare", "/doc", "documento", "/atto",
+        ))
+        or (len(last) >= 15 and "-" in last)        # slug lungo descrittivo del titolo
+    )
+    if not has_specificity:
+        return False, f"source_url senza riferimento a documento specifico (probabile lista): {src}"
     return True, None
 
 
