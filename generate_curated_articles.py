@@ -1,6 +1,7 @@
 """
 Generatore reading list curata per consulenti finanziari di Theta.
-- Esecuzione settimanale (lunedi 07:00 italiane via GitHub Actions cron)
+- Esecuzione 2 volte al giorno (07:00 e 15:00 italiane via GitHub Actions cron)
+- Genera pochi articoli per volta (3-5) per un flusso continuo invece di un blocco settimanale
 - Usa Claude Haiku con web_search per trovare articoli, paper, podcast rilevanti
 - Pulizia: articoli pubblicati da piu di 60 giorni vengono cancellati
 - Upsert su external_id per evitare duplicati
@@ -8,7 +9,7 @@ Generatore reading list curata per consulenti finanziari di Theta.
 FIX IMMAGINE/LOGO: ogni articolo ha SEMPRE un'immagine valida.
 Se Claude non fornisce image_url (o ne fornisce una non plausibile), lo script
 ricava deterministicamente il logo del publisher dal dominio del source_url
-(via logo.clearbit.com). Cosi nell'app non compaiono mai card con sfondo "rotto".
+(via Logo.dev). Cosi nell'app non compaiono mai card con sfondo "rotto".
 """
 import os
 import json
@@ -219,7 +220,7 @@ def generate_articles(client, existing_context):
 DATA OGGI: {today_str} (ISO: {today_iso}). Siamo nell'anno {current_year}.
 
 OBIETTIVO
-Trova 10-15 articoli, paper, ricerche, podcast pubblicati nelle ultime 6 settimane (dal {six_weeks_ago} a {today_iso}) che un consulente finanziario italiano dovrebbe leggere/ascoltare per fare meglio il proprio lavoro.
+Trova 3-5 articoli, paper, ricerche o podcast pubblicati nelle ultime 6 settimane (dal {six_weeks_ago} a {today_iso}) che un consulente finanziario italiano dovrebbe leggere/ascoltare per fare meglio il proprio lavoro. Sono pochi perche questa lista si aggiorna piu volte al giorno: punta sulla QUALITA e sulla VARIETA rispetto a quanto gia presente, non sulla quantita.
 
 USA WEB SEARCH per trovare contenuti REALI e RECENTI. Fonti prioritarie:
 
@@ -292,7 +293,7 @@ REGOLE
 1. SOLO contenuti realmente esistenti e verificabili - usa web_search per confermare URL e date.
 2. NO contenuti vecchi, scaduti o paywall completamente bloccati.
 3. published_date: deve essere REALE, dell'anno {current_year}, mai nel futuro, mai inventata. Se non sei sicuro della data, scarta l'articolo.
-4. Bilancia il mix: almeno 3 articoli leggeri (italiani), 3 ricerche pesanti (inglesi), 1-2 paper accademici, 1-2 podcast.
+4. Varia il mix rispetto a quanto e gia presente: alterna fonti italiane e internazionali, e tra articoli, ricerche e podcast. Evita di proporre piu volte la stessa fonte o lo stesso tema gia coperto di recente.
 5. Bilancia anche le categorie: non piu di 3 articoli sulla stessa categoria.
 6. IMMAGINE: includi image_url con un'immagine reale (og:image della pagina, copertina del paper, banner del podcast). Se non la trovi, lascia pure image_url vuoto: lo script applichera automaticamente il logo del publisher. NON inventare URL di immagini inesistenti.
 7. source_url: DEVE essere l'URL diretto dell'articolo/documento specifico, non la home del sito.
@@ -481,4 +482,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-  
