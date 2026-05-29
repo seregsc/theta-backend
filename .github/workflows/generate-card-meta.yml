@@ -1,0 +1,33 @@
+name: Card IPO e Occasioni
+
+on:
+  # Avvio manuale sempre disponibile (Actions -> Card IPO e Occasioni -> Run workflow)
+  workflow_dispatch:
+
+  # Ogni 6 ore: genera titolo editoriale + immagine per le card senza metadati
+  schedule:
+    - cron: "30 */6 * * *"
+
+jobs:
+  card-meta:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install supabase requests anthropic
+
+      - name: Run generate_card_meta.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          MAX_CARD_ITEMS: "20"
+          PARALLEL: "5"
+        run: python generate_card_meta.py
