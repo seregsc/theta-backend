@@ -1,12 +1,18 @@
 """
 Generatore reading list curata per consulenti finanziari di Theta.
-- Esecuzione settimanale (lunedì 07:00 italiane via GitHub Actions cron)
+- Esecuzione settimanale (lunedi 07:00 italiane via GitHub Actions cron)
 - Usa Claude Haiku con web_search per trovare articoli, paper, podcast rilevanti
-- Pulizia: articoli pubblicati da più di 60 giorni vengono cancellati
+- Pulizia: articoli pubblicati da piu di 60 giorni vengono cancellati
 - Upsert su external_id per evitare duplicati
+
+FIX IMMAGINE/LOGO: ogni articolo ha SEMPRE un'immagine valida.
+Se Claude non fornisce image_url (o ne fornisce una non plausibile), lo script
+ricava deterministicamente il logo del publisher dal dominio del source_url
+(via logo.clearbit.com). Cosi nell'app non compaiono mai card con sfondo "rotto".
 """
 import os
 import json
+from urllib.parse import urlparse
 from datetime import datetime, timedelta, timezone
 from supabase import create_client
 from anthropic import Anthropic
@@ -16,9 +22,121 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 MODEL = "claude-haiku-4-5"
 
+# Mappa fonte (substring, lowercase) -> dominio, per il logo del publisher.
+# Usata come fallback quando non si ricava un dominio valido dal source_url.
+SOURCE_LOGO_DOMAINS = {
+    "blackrock": "blackrock.com",
+    "vanguard": "vanguard.com",
+    "jp morgan": "jpmorgan.com",
+    "j.p. morgan": "jpmorgan.com",
+    "jpmorgan": "jpmorgan.com",
+    "pimco": "pimco.com",
+    "amundi": "amundi.com",
+    "pictet": "pictet.com",
+    "goldman": "goldmansachs.com",
+    "robeco": "robeco.com",
+    "morningstar": "morningstar.com",
+    "fundspeople": "fundspeople.com",
+    "bluerating": "bluerating.com",
+    "advisor online": "advisoronline.it",
+    "advisoronline": "advisoronline.it",
+    "focusrisparmio": "focusrisparmio.com",
+    "wall street italia": "wallstreetitalia.com",
+    "milano finanza": "milanofinanza.it",
+    "diritto bancario": "dirittobancario.it",
+    "citywire": "citywire.com",
+    "mckinsey": "mckinsey.com",
+    "boston consulting": "bcg.com",
+    "bcg": "bcg.com",
+    "deloitte": "deloitte.com",
+    "pwc": "pwc.com",
+    "banca d'italia": "bancaditalia.it",
+    "bce": "ecb.europa.eu",
+    "banca centrale europea": "ecb.europa.eu",
+    "ecb": "ecb.europa.eu",
+    "fmi": "imf.org",
+    "imf": "imf.org",
+    "bis": "bis.org",
+    "ritholtz": "ritholtzwealth.com",
+    "compound": "ritholtzwealth.com",
+    "animal spirits": "ritholtzwealth.com",
+    "schroders": "schroders.com",
+    "fidelity": "fidelity.com",
+    "invesco": "invesco.com",
+    "state street": "ssga.com",
+    "franklin": "franklintempleton.com",
+    "templeton": "franklintempleton.com",
+    "axa": "axa-im.com",
+    "eurizon": "eurizoncapital.com",
+    "anima": "animasgr.it",
+    "generali": "generali.com",
+    "intesa": "intesasanpaolo.com",
+    "unicredit": "unicredit.it",
+    "mediobanca": "mediobanca.com",
+    "azimut": "azimut.it",
+    "mediolanum": "bancamediolanum.it",
+    "dws": "dws.com",
+    "natixis": "im.natixis.com",
+    "allianz": "allianzgi.com",
+    "wellington": "wellington.com",
+    "t. rowe": "troweprice.com",
+    "nordea": "nordea.com",
+    "bnp": "bnpparibas.com",
+    "bloomberg": "bloomberg.com",
+    "financial times": "ft.com",
+    "reuters": "reuters.com",
+    "wall street journal": "wsj.com",
+    "economist": "economist.com",
+    "il sole 24 ore": "ilsole24ore.com",
+    "cfa institute": "cfainstitute.org",
+}
+
+# Domini "social/redirect" da NON usare come logo (non sono publisher reali).
+SKIP_DOMAINS = {"t.co", "bit.ly", "lnkd.in", "youtube.com", "youtu.be",
+                "twitter.com", "x.com", "linkedin.com", "facebook.com"}
+
+
+def logo_from_domain(domain):
+    return f"https://logo.clearbit.com/{domain}"
+
+
+def derive_image(a):
+    """Restituisce un'immagine SEMPRE valida per l'articolo.
+    Priorita: 1) image_url fornita da Claude se plausibile (http+estensione/og),
+              2) logo dal mapping della fonte,
+              3) logo dal dominio del source_url."""
+    # 1) immagine fornita, se sembra un'immagine reale (non vuota, http)
+    img = (a.get("image_url") or "").strip()
+    if img.startswith("http") and "clearbit.com" not in img:
+        # accetta solo se ha l'aria di un'immagine (estensione comune o querystring immagine)
+        low = img.lower()
+        if any(low.split("?")[0].endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif")) \
+           or "og:image" in low or "/image" in low or "/media" in low or "/wp-content" in low:
+            return img
+
+    # 2) logo dal nome fonte
+    src = (a.get("source") or "").lower()
+    for key, domain in SOURCE_LOGO_DOMAINS.items():
+        if key in src:
+            return logo_from_domain(domain)
+
+    # 3) logo dal dominio del source_url
+    su = (a.get("source_url") or "").strip()
+    if su:
+        try:
+            host = urlparse(su).hostname or ""
+            host = host.replace("www.", "")
+            if host and host not in SKIP_DOMAINS:
+                return logo_from_domain(host)
+        except Exception:
+            pass
+
+    # 4) fallback finale: nessuna immagine (il frontend mostrera il fallback testuale)
+    return None
+
 
 def fetch_existing_articles(supabase, limit=80):
-    """Recupera articoli già esistenti (ultimi N) per dare contesto a Claude."""
+    """Recupera articoli gia esistenti (ultimi N) per dare contesto a Claude."""
     try:
         result = supabase.table("curated_articles_live") \
             .select("external_id, title, source, published_date") \
@@ -32,7 +150,7 @@ def fetch_existing_articles(supabase, limit=80):
 
 
 def cleanup_old_articles(supabase):
-    """Cancella articoli pubblicati da più di 60 giorni."""
+    """Cancella articoli pubblicati da piu di 60 giorni."""
     cutoff = (datetime.now(timezone.utc) - timedelta(days=60)).date().isoformat()
     try:
         result = supabase.table("curated_articles_live") \
@@ -49,14 +167,14 @@ def cleanup_old_articles(supabase):
 
 def build_existing_context(existing):
     if not existing:
-        return "(nessun articolo già nel database — popola la lista da zero)"
+        return "(nessun articolo gia nel database - popola la lista da zero)"
     lines = []
     for a in existing[:40]:
         title = a.get("title") or ""
         src = a.get("source") or ""
         date = a.get("published_date") or ""
         ext = a.get("external_id") or ""
-        lines.append(f"- [{ext}] {src} — {date} — {title}")
+        lines.append(f"- [{ext}] {src} - {date} - {title}")
     return "\n".join(lines)
 
 
@@ -87,51 +205,53 @@ def parse_response(text):
 
 
 def generate_articles(client, existing_context):
-    today_str = datetime.now().strftime("%d %B %Y, %A")
-    today_iso = datetime.now().strftime("%Y-%m-%d")
-    six_weeks_ago = (datetime.now() - timedelta(days=42)).strftime("%Y-%m-%d")
+    today = datetime.now()
+    today_str = today.strftime("%d/%m/%Y")
+    today_iso = today.strftime("%Y-%m-%d")
+    six_weeks_ago = (today - timedelta(days=42)).strftime("%Y-%m-%d")
+    current_year = today.year
 
     prompt = f"""Sei un editor che cura una reading list settimanale per consulenti finanziari italiani professionisti.
 
-DATA OGGI: {today_str} ({today_iso})
+DATA OGGI: {today_str} (ISO: {today_iso}). Siamo nell'anno {current_year}.
 
 OBIETTIVO
-Trova 10-15 articoli, paper, ricerche, podcast pubblicati nelle ultime 6 settimane (dal {six_weeks_ago} a oggi) che un consulente finanziario italiano dovrebbe leggere/ascoltare per fare meglio il proprio lavoro.
+Trova 10-15 articoli, paper, ricerche, podcast pubblicati nelle ultime 6 settimane (dal {six_weeks_ago} a {today_iso}) che un consulente finanziario italiano dovrebbe leggere/ascoltare per fare meglio il proprio lavoro.
 
 USA WEB SEARCH per trovare contenuti REALI e RECENTI. Fonti prioritarie:
 
 ASSET MANAGER & RICERCA ISTITUZIONALE (en):
-- BlackRock Investment Institute — blackrock.com/institute
-- Vanguard Research — corporate.vanguard.com/research
-- JP Morgan Asset Management — Market Insights
-- Pimco Insights — pimco.com/en-us/insights
-- Amundi Research Center — amundi.com/research
-- Pictet Asset Management — Insights
-- Goldman Sachs Asset Management — insights
-- Robeco — Insights
+- BlackRock Investment Institute - blackrock.com/institute
+- Vanguard Research - corporate.vanguard.com/research
+- JP Morgan Asset Management - Market Insights
+- Pimco Insights - pimco.com/en-us/insights
+- Amundi Research Center - amundi.com/research
+- Pictet Asset Management - Insights
+- Goldman Sachs Asset Management - insights
+- Robeco - Insights
 
 ISTITUZIONALI ITALIA / EU (it/en):
-- Banca d'Italia — Temi di discussione e Note di stabilità
-- BCE — Working papers e Financial Stability Review
-- FMI — IMF Working Papers
-- Banca dei Regolamenti Internazionali (BIS) — Quarterly Review
+- Banca d'Italia - Temi di discussione e Note di stabilita
+- BCE - Working papers e Financial Stability Review
+- FMI - IMF Working Papers
+- Banca dei Regolamenti Internazionali (BIS) - Quarterly Review
 
 MEDIA SPECIALIZZATI ITALIA (it):
-- Morningstar Italia — morningstar.it
-- FundsPeople Italia — fundspeople.com/it
-- Bluerating — bluerating.com
-- Advisor Online — advisoronline.it
-- FocusRisparmio — focusrisparmio.com
-- Wall Street Italia — wallstreetitalia.com
-- Milano Finanza — milanofinanza.it
-- Diritto Bancario — dirittobancario.it (per contenuti normativi/commentary)
+- Morningstar Italia - morningstar.it
+- FundsPeople Italia - fundspeople.com/it
+- Bluerating - bluerating.com
+- Advisor Online - advisoronline.it
+- FocusRisparmio - focusrisparmio.com
+- Wall Street Italia - wallstreetitalia.com
+- Milano Finanza - milanofinanza.it
+- Diritto Bancario - dirittobancario.it (per contenuti normativi/commentary)
 - Citywire Italia
 
 CONSULTING & STRATEGY (en):
-- McKinsey & Co. — Financial Services Insights
-- Boston Consulting Group — Wealth Management Reports
-- Deloitte — Wealth & Asset Management Outlook
-- PwC — Asset & Wealth Management
+- McKinsey & Co. - Financial Services Insights
+- Boston Consulting Group - Wealth Management Reports
+- Deloitte - Wealth & Asset Management Outlook
+- PwC - Asset & Wealth Management
 
 PODCAST E ALTRI FORMATI:
 - Bluerating Podcast
@@ -140,57 +260,59 @@ PODCAST E ALTRI FORMATI:
 - The Compound (Ritholtz Wealth)
 - Animal Spirits
 
-ARTICOLI GIÀ NEL DATABASE (NON duplicare):
+ARTICOLI GIA NEL DATABASE (NON duplicare):
 {existing_context}
 
 CATEGORIE (esattamente uno tra questi, lowercase):
-- "strategia" → outlook trimestrali, asset allocation, geopolitica
-- "mercati" → analisi azionario, obbligazionario, valute, commodities
-- "asset_class" → ETF, private markets, alternative, gold
-- "wealth" → wealth management, passaggio generazionale, family office
-- "comportamento" → finanza comportamentale, bias, neuroeconomia
-- "pratica" → relazione cliente, vendita, marketing, business
-- "normativa" → commentary normativo, opinioni esperti (NON aggiornamenti CONSOB ufficiali — quelli vanno altrove)
-- "innovazione" → AI, fintech, blockchain, robo-advisor
+- "strategia" -> outlook trimestrali, asset allocation, geopolitica
+- "mercati" -> analisi azionario, obbligazionario, valute, commodities
+- "asset_class" -> ETF, private markets, alternative, gold
+- "wealth" -> wealth management, passaggio generazionale, family office
+- "comportamento" -> finanza comportamentale, bias, neuroeconomia
+- "pratica" -> relazione cliente, vendita, marketing, business
+- "normativa" -> commentary normativo, opinioni esperti (NON aggiornamenti CONSOB ufficiali)
+- "innovazione" -> AI, fintech, blockchain, robo-advisor
 
 FORMAT (esattamente uno):
-- "articolo" → articolo giornalistico, blog post
-- "paper" → paper accademico, ricerca scientifica
-- "report" → report istituzionale, outlook annuale
-- "podcast" → episodio podcast (con durata)
-- "video" → intervista video, webinar registrato
+- "articolo" -> articolo giornalistico, blog post
+- "paper" -> paper accademico, ricerca scientifica
+- "report" -> report istituzionale, outlook annuale
+- "podcast" -> episodio podcast (con durata)
+- "video" -> intervista video, webinar registrato
 
-IMPORTANCE — quanto è imperdibile:
-- "HIGH" → pubblicazione di rilievo, autori top, contenuto unico
-- "MED" → buona qualità, vale la pena
-- "LOW" → contesto utile ma non urgente
+IMPORTANCE - quanto e imperdibile:
+- "HIGH" -> pubblicazione di rilievo, autori top, contenuto unico
+- "MED" -> buona qualita, vale la pena
+- "LOW" -> contesto utile ma non urgente
 
 REGOLE
-1. SOLO contenuti realmente esistenti e verificabili — usa web_search per confermare URL e date.
+1. SOLO contenuti realmente esistenti e verificabili - usa web_search per confermare URL e date.
 2. NO contenuti vecchi, scaduti o paywall completamente bloccati.
-3. Bilancia il mix: almeno 3 articoli leggeri (italiani), 3 ricerche pesanti (inglesi), 1-2 paper accademici, 1-2 podcast.
-4. Bilancia anche le categorie: non più di 3 articoli sulla stessa categoria.
-5. **IMMAGINE OBBLIGATORIA**: per ogni articolo DEVI includere image_url con un'immagine reale e raggiungibile. Cercala attivamente: og:image della pagina, immagine di copertina del paper, banner del podcast, screenshot di apertura del video. Se davvero non riesci a trovare un'immagine, includi comunque image_url settato al logo del publisher (es. "https://logo.clearbit.com/blackrock.com" per BlackRock, "https://logo.clearbit.com/morningstar.com" per Morningstar, ecc.). NON lasciare image_url null/vuoto: ogni card SENZA immagine sembra rotta nell'app.
-6. reading_time: stima realistica in minuti (1500 parole = ~7 min).
-7. summary: 2-3 frasi che spieghino DI COSA parla l'articolo.
-8. why_relevant: 1-2 frasi che spieghino PERCHÉ il consulente dovrebbe leggerlo.
-9. Mantieni external_id stabile e descrittivo (es. "blackrock-q2-2026-geopolitical-dashboard").
+3. published_date: deve essere REALE, dell'anno {current_year}, mai nel futuro, mai inventata. Se non sei sicuro della data, scarta l'articolo.
+4. Bilancia il mix: almeno 3 articoli leggeri (italiani), 3 ricerche pesanti (inglesi), 1-2 paper accademici, 1-2 podcast.
+5. Bilancia anche le categorie: non piu di 3 articoli sulla stessa categoria.
+6. IMMAGINE: includi image_url con un'immagine reale (og:image della pagina, copertina del paper, banner del podcast). Se non la trovi, lascia pure image_url vuoto: lo script applichera automaticamente il logo del publisher. NON inventare URL di immagini inesistenti.
+7. source_url: DEVE essere l'URL diretto dell'articolo/documento specifico, non la home del sito.
+8. reading_time: stima realistica in minuti (1500 parole = ~7 min).
+9. summary: 2-3 frasi che spieghino DI COSA parla l'articolo.
+10. why_relevant: 1-2 frasi che spieghino PERCHE il consulente dovrebbe leggerlo.
+11. Mantieni external_id stabile e descrittivo (es. "blackrock-q2-{current_year}-geopolitical-dashboard").
 
-OUTPUT — rispondi SOLO con array JSON, senza markdown, senza commenti:
+OUTPUT - rispondi SOLO con array JSON, senza markdown, senza commenti:
 
 [
   {{
-    "external_id": "blackrock-q2-2026-outlook",
-    "title": "Titolo originale dell'articolo (anche in inglese se l'originale è inglese)",
-    "title_it": "Titolo italiano d'impatto, comprensibile, max 12 parole — DEVE far capire al consulente di cosa parla l'articolo. Esempio: invece di 'Q2 2026 Investment Outlook' scrivi 'Outlook trimestrale: dove BlackRock vede valore nel Q2 2026'. Esempio: invece di 'Beyond the Magnificent 7' scrivi 'Oltre i Magnificent 7: dove cercare i prossimi vincitori in azionario USA'.",
+    "external_id": "blackrock-q2-{current_year}-outlook",
+    "title": "Titolo originale dell'articolo (anche in inglese se l'originale e inglese)",
+    "title_it": "Titolo italiano d'impatto, comprensibile, max 12 parole - DEVE far capire al consulente di cosa parla l'articolo.",
     "source": "BlackRock Investment Institute",
     "author": "BlackRock Research Team",
-    "published_date": "2026-04-15",
+    "published_date": "{current_year}-04-15",
     "category": "strategia",
     "format": "report",
     "language": "en",
     "summary": "Sintesi 2-3 frasi di cosa parla l'articolo.",
-    "why_relevant": "1-2 frasi: perché il consulente deve leggerlo.",
+    "why_relevant": "1-2 frasi: perche il consulente deve leggerlo.",
     "reading_time": 12,
     "image_url": "https://...jpg",
     "source_url": "https://www.blackrock.com/institute/...",
@@ -202,23 +324,22 @@ OUTPUT — rispondi SOLO con array JSON, senza markdown, senza commenti:
 ]
 
 REGOLA CRITICA SU title_it:
-- È OBBLIGATORIO per OGNI articolo
-- DEVE essere in italiano, anche se l'articolo è in inglese
-- DEVE far capire IMMEDIATAMENTE al consulente di cosa parla — niente titoli vaghi tipo "Strategy Update" o "Market Outlook"
+- E OBBLIGATORIO per OGNI articolo
+- DEVE essere in italiano, anche se l'articolo e in inglese
+- DEVE far capire IMMEDIATAMENTE di cosa parla - niente titoli vaghi
 - Lunghezza ideale: 8-12 parole
-- Stile: chiaro, professionale, d'impatto. Come un titolo di Plus24 o Milano Finanza
-- Esempi BUONI: "Tassi al 3,75%: la BCE pronta a una pausa lunga", "Oro sopra $3.000: cosa cambia per i portafogli prudenti", "Private markets: gli errori più frequenti sui clienti HNW"
+- Esempi BUONI: "Tassi al 3,75%: la BCE pronta a una pausa lunga", "Oro sopra $3.000: cosa cambia per i portafogli prudenti"
 - Esempi CATTIVI: "Q1 Outlook", "Market Review", "Investment Insights"
 
 COLORI per category (usa esattamente questi):
-- strategia → "#0ea5e9" (blu)
-- mercati → "#10b981" (verde)
-- asset_class → "#06b6d4" (ciano)
-- wealth → "#8b5cf6" (viola scuro)
-- comportamento → "#ec4899" (rosa)
-- pratica → "#f59e0b" (ambra)
-- normativa → "#dc2626" (rosso)
-- innovazione → "#a855f7" (viola)
+- strategia -> "#0ea5e9" (blu)
+- mercati -> "#10b981" (verde)
+- asset_class -> "#06b6d4" (ciano)
+- wealth -> "#8b5cf6" (viola scuro)
+- comportamento -> "#ec4899" (rosa)
+- pratica -> "#f59e0b" (ambra)
+- normativa -> "#dc2626" (rosso)
+- innovazione -> "#a855f7" (viola)
 
 Genera la lista adesso."""
 
@@ -234,7 +355,6 @@ Genera la lista adesso."""
             messages=[{"role": "user", "content": prompt}],
         )
 
-        # Concatena tutti i blocchi di testo della risposta
         text_blocks = []
         for block in response.content:
             if block.type == "text":
@@ -253,13 +373,20 @@ def validate_article(a):
     for field in required:
         if not a.get(field):
             return False, f"campo mancante: {field}"
-    # title_it deve essere ragionevole (almeno 5 caratteri, non identico al title se title è in inglese)
     if len(a.get("title_it", "")) < 5:
         return False, "title_it troppo corto"
+
+    # published_date: formato + plausibilita (no futuro, no troppo vecchia)
     try:
-        datetime.strptime(a["published_date"], "%Y-%m-%d")
+        pub = datetime.strptime(a["published_date"], "%Y-%m-%d")
     except ValueError:
         return False, "formato published_date non valido"
+    now = datetime.now()
+    if pub.date() > (now + timedelta(days=1)).date():
+        return False, f"published_date nel futuro: {a['published_date']}"
+    if pub.date() < (now - timedelta(days=70)).date():
+        return False, f"published_date troppo vecchia: {a['published_date']}"
+
     valid_categories = ["strategia", "mercati", "asset_class", "wealth", "comportamento", "pratica", "normativa", "innovazione"]
     if a["category"] not in valid_categories:
         return False, f"categoria non valida: {a['category']}"
@@ -273,7 +400,10 @@ def validate_article(a):
 
 
 def save_article(supabase, a):
-    """Upsert su external_id."""
+    """Upsert su external_id. Garantisce sempre un'immagine valida."""
+    # IMMAGINE SEMPRE VALIDA: logo del publisher se manca/non plausibile.
+    image = derive_image(a)
+
     row = {
         "external_id": a.get("external_id"),
         "title": a.get("title"),
@@ -287,14 +417,15 @@ def save_article(supabase, a):
         "summary": a.get("summary"),
         "why_relevant": a.get("why_relevant"),
         "reading_time": a.get("reading_time"),
-        "image_url": a.get("image_url"),
+        "image_url": image,
         "source_url": a.get("source_url"),
         "tags": a.get("tags") or [],
         "color": a.get("color") or "#0ea5e9",
         "importance": a.get("importance") or "MED",
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
-    # Rimuovi None per non sovrascrivere campi esistenti
+    # Rimuovi None per non sovrascrivere campi esistenti (ma image_url puo restare None
+    # solo se proprio non ricavabile; in quel caso il frontend usa il fallback testuale).
     row = {k: v for k, v in row.items() if v is not None}
 
     try:
@@ -315,7 +446,7 @@ def main():
     cleanup_old_articles(supabase)
     print()
 
-    print("2. Recupero articoli già esistenti...")
+    print("2. Recupero articoli gia esistenti...")
     existing = fetch_existing_articles(supabase)
     print(f"   {len(existing)} articoli nel database\n")
     existing_context = build_existing_context(existing)
