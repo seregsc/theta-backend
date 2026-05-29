@@ -104,7 +104,7 @@ DESCRIZIONE: {headline}. {summary[:300]}
 
 Regole:
 - card_title: MOLTO breve e d'impatto (max 28 caratteri, idealmente 2-3 parole). Può essere il nome dell'azienda o una frase incisiva. Esempi: "Klarna pronta al lancio", "Rumors su SpaceX", "Revolut verso la quotazione".
-- card_subtitle: una frase contestuale (max 70 caratteri) che spiega cosa sta succedendo, concreta. Esempi: "Il colosso BNPL svedese punta a Wall Street", "Indiscrezioni su una quotazione da 150 miliardi".
+- card_subtitle: una frase contestuale (max 48 caratteri) che spiega cosa sta succedendo, concreta. Esempi: "Il colosso BNPL svedese punta a Wall Street", "Indiscrezioni su una quotazione da 150 miliardi".
 - Italiano semplice, niente gergo, niente virgolette nei testi.
 
 Rispondi SOLO con JSON: {{"card_title": "...", "card_subtitle": "..."}}"""
@@ -136,7 +136,7 @@ CONTESTO: {headline}. {summary[:200]} {reason[:200]}
 
 Regole:
 - card_title: MOLTO breve e d'impatto (max 28 caratteri, idealmente 2-3 parole). Di solito il nome o ticker, oppure una frase incisiva. Esempi: "NVDA crolla del 5%", "Stellantis a P/E 4x", "Occasione su BMW".
-- card_subtitle: una frase contestuale (max 70 caratteri) concreta che spiega perché guardarla. Esempi: "Perde il 5% in un giorno dopo la trimestrale", "Value play estremo nell'automotive premium".
+- card_subtitle: una frase contestuale (max 48 caratteri) concreta che spiega perché guardarla. Esempi: "Perde il 5% in un giorno dopo la trimestrale", "Value play estremo nell'automotive premium".
 - Italiano semplice, niente gergo, niente virgolette nei testi.
 
 Rispondi SOLO con JSON: {{"card_title": "...", "card_subtitle": "..."}}"""
@@ -157,7 +157,7 @@ def _ask_titles(client, prompt, fallback_title):
         if isinstance(parsed, dict) and parsed.get("card_title"):
             return {
                 "card_title": str(parsed["card_title"])[:32].strip(),
-                "card_subtitle": str(parsed.get("card_subtitle", ""))[:80].strip(),
+                "card_subtitle": str(parsed.get("card_subtitle", ""))[:50].strip(),
             }
     except Exception as e:
         print(f"  [AI title error] {e}")
