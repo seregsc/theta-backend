@@ -103,7 +103,7 @@ STATO IPO: {status}
 DESCRIZIONE: {headline}. {summary[:300]}
 
 Regole:
-- card_title: MOLTO breve e d'impatto (max 40 caratteri). Può essere il nome dell'azienda o una frase incisiva. Esempi: "Klarna pronta al lancio", "Rumors su SpaceX", "Revolut verso la quotazione".
+- card_title: MOLTO breve e d'impatto (max 28 caratteri, idealmente 2-3 parole). Può essere il nome dell'azienda o una frase incisiva. Esempi: "Klarna pronta al lancio", "Rumors su SpaceX", "Revolut verso la quotazione".
 - card_subtitle: una frase contestuale (max 70 caratteri) che spiega cosa sta succedendo, concreta. Esempi: "Il colosso BNPL svedese punta a Wall Street", "Indiscrezioni su una quotazione da 150 miliardi".
 - Italiano semplice, niente gergo, niente virgolette nei testi.
 
@@ -115,18 +115,16 @@ Rispondi SOLO con JSON: {{"card_title": "...", "card_subtitle": "..."}}"""
 def make_titles_uv(client, opp):
     name = opp.get("name") or opp.get("ticker") or "Asset"
     ticker = opp.get("ticker") or ""
-    cat = opp.get("live_category") or ""
-    dd = opp.get("drawdown") or opp.get("dd") or ""
-    headline = opp.get("title") or opp.get("headline") or ""
+    cat = opp.get("category") or ""
+    dd = opp.get("change_pct_1d") or opp.get("change_pct_7d") or opp.get("change_pct_30d") or ""
+    headline = opp.get("title") or ""
     summary = opp.get("summary") or ""
     reason = opp.get("reason") or ""
 
     cat_label = {
-        "crollo_lampo": "crollo improvviso nelle ultime 24 ore",
-        "crolli_recenti": "calo forte nell'ultimo mese",
-        "eventi_macro": "possibile beneficiario di uno scenario di mercato",
-        "news_positive": "notizie recenti positive",
-        "sotto_radar": "occasione poco seguita dal mercato",
+        "crolli": "calo recente, possibile occasione di ingresso",
+        "beneficiari": "possibile beneficiario di eventi di mercato",
+        "sottovalutati": "ribasso moderato, possibile valore non riconosciuto",
     }.get(cat, "possibile occasione di valore")
 
     prompt = f"""Sei l'editor di un'app finanziaria italiana. Scrivi il titolo di copertina per la card di un'occasione d'investimento, in stile rivista (come le copertine Netflix).
@@ -137,7 +135,7 @@ VARIAZIONE: {dd}
 CONTESTO: {headline}. {summary[:200]} {reason[:200]}
 
 Regole:
-- card_title: MOLTO breve e d'impatto (max 40 caratteri). Di solito il nome o ticker, oppure una frase incisiva. Esempi: "NVDA crolla del 5%", "Stellantis a P/E 4x", "Occasione su BMW".
+- card_title: MOLTO breve e d'impatto (max 28 caratteri, idealmente 2-3 parole). Di solito il nome o ticker, oppure una frase incisiva. Esempi: "NVDA crolla del 5%", "Stellantis a P/E 4x", "Occasione su BMW".
 - card_subtitle: una frase contestuale (max 70 caratteri) concreta che spiega perché guardarla. Esempi: "Perde il 5% in un giorno dopo la trimestrale", "Value play estremo nell'automotive premium".
 - Italiano semplice, niente gergo, niente virgolette nei testi.
 
@@ -148,7 +146,7 @@ Rispondi SOLO con JSON: {{"card_title": "...", "card_subtitle": "..."}}"""
 
 def _ask_titles(client, prompt, fallback_title):
     if not client:
-        return {"card_title": fallback_title[:40], "card_subtitle": ""}
+        return {"card_title": fallback_title[:28], "card_subtitle": ""}
     try:
         msg = client.messages.create(
             model=MODEL,
@@ -158,12 +156,12 @@ def _ask_titles(client, prompt, fallback_title):
         parsed = parse_json_loose(msg.content[0].text)
         if isinstance(parsed, dict) and parsed.get("card_title"):
             return {
-                "card_title": str(parsed["card_title"])[:60].strip(),
-                "card_subtitle": str(parsed.get("card_subtitle", ""))[:90].strip(),
+                "card_title": str(parsed["card_title"])[:32].strip(),
+                "card_subtitle": str(parsed.get("card_subtitle", ""))[:80].strip(),
             }
     except Exception as e:
         print(f"  [AI title error] {e}")
-    return {"card_title": fallback_title[:40], "card_subtitle": ""}
+    return {"card_title": fallback_title[:28], "card_subtitle": ""}
 
 
 # ════════════════════════════════════════════════════════════════
@@ -320,6 +318,14 @@ def main():
     if not client:
         print("⚠ ANTHROPIC_API_KEY non configurata: genero solo le immagini, i titoli useranno il nome.")
 
+    # Verifica che il bucket immagini esista (altrimenti le immagini falliranno tutte)
+    try:
+        test = supabase.storage.from_(BUCKET_NAME).list()
+        print(f"✓ Bucket '{BUCKET_NAME}' raggiungibile.")
+    except Exception as e:
+        print(f"⚠ Bucket '{BUCKET_NAME}' NON raggiungibile: {str(e)[:140]}")
+        print(f"  → Crea su Supabase un bucket PUBBLICO chiamato '{BUCKET_NAME}'. I titoli verranno comunque generati.")
+
     # IPO
     process_table(
         supabase, client,
@@ -333,7 +339,7 @@ def main():
         supabase, client,
         table="opportunities",
         kind="uv",
-        select_cols="id, ticker, name, live_category, status, title, headline, summary, reason, drawdown, card_title, image_url",
+        select_cols="id, ticker, name, category, status, title, summary, reason, catalyst, change_pct_1d, change_pct_7d, change_pct_30d, expected_move, card_title, image_url",
     )
 
     print("✓ Completato.")
