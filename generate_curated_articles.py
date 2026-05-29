@@ -96,19 +96,22 @@ SKIP_DOMAINS = {"t.co", "bit.ly", "lnkd.in", "youtube.com", "youtu.be",
                 "twitter.com", "x.com", "linkedin.com", "facebook.com"}
 
 
+LOGODEV_KEY = os.environ.get("LOGODEV_KEY") or "pk_eURA5T4JQ0i-VwQb55AphA"
+
+
 def logo_from_domain(domain):
-    return f"https://logo.clearbit.com/{domain}"
+    # Clearbit dismesso (dic 2025): usiamo Logo.dev (stessa key del frontend).
+    return f"https://img.logo.dev/{domain}?token={LOGODEV_KEY}&size=128"
 
 
 def derive_image(a):
     """Restituisce un'immagine SEMPRE valida per l'articolo.
-    Priorita: 1) image_url fornita da Claude se plausibile (http+estensione/og),
+    Priorita: 1) image_url fornita da Claude se plausibile (foto reale),
               2) logo dal mapping della fonte,
               3) logo dal dominio del source_url."""
-    # 1) immagine fornita, se sembra un'immagine reale (non vuota, http)
+    # 1) immagine fornita, se sembra un'immagine reale (foto, non logo/clearbit morto)
     img = (a.get("image_url") or "").strip()
-    if img.startswith("http") and "clearbit.com" not in img:
-        # accetta solo se ha l'aria di un'immagine (estensione comune o querystring immagine)
+    if img.startswith("http") and "clearbit.com" not in img and "logo.dev" not in img:
         low = img.lower()
         if any(low.split("?")[0].endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif")) \
            or "og:image" in low or "/image" in low or "/media" in low or "/wp-content" in low:
@@ -478,3 +481,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+  
