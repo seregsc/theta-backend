@@ -111,6 +111,13 @@ REGOLA CRITICA SULLE DATE (la piu importante):
 - Ricontrolla ogni published_date prima di scriverla: l'anno deve essere {current_year}, e il giorno/mese devono corrispondere esattamente a quanto riportato dalla fonte ufficiale.
 - effective_date (data di entrata in vigore) puo essere nel futuro: e l'unica data che puo superare oggi.
 
+REGOLA CRITICA SUL LINK (source_url):
+- source_url DEVE essere l'URL DIRETTO della pagina specifica del documento/comunicato (es. la pagina della singola delibera, del comunicato stampa, delle linee guida), NON la homepage generica del sito.
+- ESEMPIO SBAGLIATO: "https://www.consob.it" oppure "https://www.consob.it/web/area-pubblica/comunicati-stampa" (pagina indice).
+- ESEMPIO CORRETTO: "https://www.consob.it/web/area-pubblica/dettaglio-news?viewId=news_comunicato_xyz" (la pagina del singolo documento citato).
+- Prendi l'URL ESATTO dal risultato di ricerca web che hai usato per trovare quella specifica normativa. Deve portare l'utente direttamente al documento, non a una lista o alla home.
+- Se non hai un URL diretto al documento specifico ma solo la homepage, SCARTA quell'aggiornamento (non includerlo): un link generico non e utile al consulente.
+
 CATEGORIE da usare (esattamente uno tra questi, lowercase):
 - "mifid" -> MiFID, consulenza, suitability, product governance, profilatura
 - "fiscale" -> capital gain, tassazione, IRPEF, dichiarazioni, ISA
@@ -241,6 +248,28 @@ def validate_update(u):
     valid_impact = ["HIGH", "MED", "LOW"]
     if u.get("impact_level") and u["impact_level"] not in valid_impact:
         return False, f"impact_level non valido: {u['impact_level']}"
+
+    # Rifiuta source_url che sono solo homepage o pagine-indice generiche.
+    # Un link utile deve puntare alla pagina del documento, non a una lista.
+    src = (u.get("source_url") or "").strip()
+    if src:
+        from urllib.parse import urlparse
+        try:
+            parsed = urlparse(src)
+            path = (parsed.path or "").strip("/")
+            has_query = bool(parsed.query)  # un ?id=... di solito indica una pagina specifica
+            segments = [s for s in path.split("/") if s]
+            last = segments[-1].lower() if segments else ""
+            # Pagine indice/home da scartare (se l'URL finisce qui senza query specifica)
+            index_pages = {
+                "", "web", "home", "index", "index.html", "news", "media",
+                "comunicati", "comunicati-stampa", "ufficio-stampa", "normativa",
+                "area-pubblica", "press", "press-releases", "newsroom",
+            }
+            if not has_query and (last in index_pages or len(path) < 5):
+                return False, f"source_url troppo generico (homepage/indice): {src}"
+        except Exception:
+            pass
     return True, None
 
 
