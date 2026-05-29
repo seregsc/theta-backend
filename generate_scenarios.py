@@ -4,9 +4,14 @@ Generatore di stress test live per Theta.
 - Mai cancellati: archivio storico permanente
 - Diversificazione: il prompt riceve i titoli degli scenari passati per non duplicare
 - Include analisi settoriale: affected_sectors + sector_impact per impatti INDIRETTI sui clienti
+- NOVITÀ: genera precedenti storici SPECIFICI insieme allo scenario
+- NOVITÀ: genera l'immagine AI subito (Pollinations) e la salva su Supabase Storage
 """
 import os
 import json
+import time
+import urllib.parse
+import requests
 from datetime import datetime, timedelta, timezone
 from supabase import create_client
 from anthropic import Anthropic
@@ -14,7 +19,11 @@ from anthropic import Anthropic
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-MODEL = "claude-sonnet-4-5"
+# Nome modello VALIDO (con suffisso data). Senza data l'API fallisce silenziosamente.
+MODEL = "claude-sonnet-4-5-20250929"
+
+# Bucket pubblico su Supabase Storage per le immagini scenari
+IMAGE_BUCKET = "scenario-images"
 
 
 def fetch_recent_news_context(supabase, limit=10):
@@ -49,8 +58,7 @@ def build_news_context(news_items):
         title = n.get("title_it") or "—"
         impact = (n.get("impact_it") or "")[:150]
         lines.append(f"- {title} — {impact}")
-    return "\
-".join(lines)
+    return "\n".join(lines)
 
 
 def build_avoid_list(existing):
@@ -61,16 +69,14 @@ def build_avoid_list(existing):
         title = s.get("title") or ""
         desc = (s.get("description") or "")[:80]
         lines.append(f"- {title}: {desc}")
-    return "\
-".join(lines)
+    return "\n".join(lines)
 
 
 def parse_response(text):
     """Estrae il singolo oggetto JSON dalla risposta."""
     text = text.strip()
     if text.startswith("```"):
-        first_newline = text.find("\
-")
+        first_newline = text.find("\n")
         if first_newline > 0:
             text = text[first_newline + 1:]
         if text.endswith("```"):
@@ -154,6 +160,13 @@ SETTORI DISPONIBILI (usa SOLO questi tag esatti):
 - reit → Immobiliare quotato (SPG, PLD)
 - indices → Indici di mercato (SPY, QQQ, IWM, DIA, ACWI)
 
+PRECEDENTI STORICI — REGOLA FONDAMENTALE
+Devi fornire 2-3 precedenti storici VERAMENTE simili a QUESTO scenario specifico.
+- NON eventi generici della stessa "categoria", ma eventi che hanno la STESSA dinamica concreta.
+- Esempio sbagliato: per uno scenario "Cina blocca esportazioni di terre rare" NON citare il lancio di iPhone o ChatGPT solo perché è "tecnologia".
+- Esempio giusto: per uno scenario "Cina blocca esportazioni di terre rare" cita gli embarghi reali di terre rare (2010 Cina-Giappone), o lo Smoot-Hawley Tariff Act (1930), o l'embargo petrolifero OPEC (1973).
+- Ogni precedente deve avere: anno/periodo, nome dell'evento, riassunto in 1 frase di cosa successe ai mercati, dettaglio di 2 frasi con numeri concreti (% di calo, durata, recovery), sentiment ("pos"/"neg"/"warn" a seconda di come andò).
+
 OUTPUT — rispondi SOLO con JSON puro, un singolo oggetto, senza markdown:
 
 {{
@@ -193,7 +206,23 @@ OUTPUT — rispondi SOLO con JSON puro, un singolo oggetto, senza markdown:
     {{"ticker": "NVDA", "name": "NVIDIA", "expected_move": "-25/-35%", "why": "..."}}
   ],
   "hedge_strategy": "3-4 frasi al TU al consulente in italiano semplice.",
-  "early_warning": ["Segnale 1", "Segnale 2", "Segnale 3"]
+  "early_warning": ["Segnale 1", "Segnale 2", "Segnale 3"],
+  "historical_precedents": [
+    {{
+      "when": "1973",
+      "event": "Embargo petrolifero OPEC",
+      "summary": "I paesi OPEC bloccano le esportazioni verso l'Occidente: i mercati crollano e l'inflazione esplode.",
+      "detail": "L'S&P 500 perse circa il 48% in 21 mesi, il petrolio quadruplicò da 3$ a 12$ al barile. Recovery completa solo nel 1980. Conseguenze inflattive per tutto il decennio.",
+      "sentiment": "neg"
+    }},
+    {{
+      "when": "Anno-Anno",
+      "event": "Nome evento storico realmente simile a QUESTO scenario specifico",
+      "summary": "Cosa successe ai mercati in una frase.",
+      "detail": "Dettagli con numeri concreti: % di calo, durata, recovery.",
+      "sentiment": "pos | neg | warn"
+    }}
+  ]
 }}
 
 REGOLE CRITICHE SULL'IMPATTO SETTORIALE:
@@ -207,7 +236,7 @@ Genera UN solo scenario, originale, non simile a nessuno dei precedenti."""
     try:
         response = client.messages.create(
             model=MODEL,
-            max_tokens=3500,
+            max_tokens=4500,
             messages=[{"role": "user", "content": prompt}],
         )
         text = response.content[0].text.strip()
@@ -217,7 +246,94 @@ Genera UN solo scenario, originale, non simile a nessuno dei precedenti."""
         return None
 
 
+# ═══════════════════════════════════════════════════════════════
+# GENERAZIONE IMMAGINE AI (Pollinations - gratuito)
+# ═══════════════════════════════════════════════════════════════
+
+def build_image_prompt(scenario):
+    title = (scenario.get("title") or "").strip()
+    desc = (scenario.get("description") or "").strip()
+    severity = (scenario.get("severity") or "").strip()
+    desc_short = desc[:200]
+    palette = {
+        "Critica": "dark crimson and deep charcoal, ominous mood",
+        "Severa": "amber and burnt orange, tense mood",
+        "Media": "warm orange and slate grey, cautious mood",
+    }.get(severity, "cool blue and slate grey, measured mood")
+    return (
+        f"Editorial conceptual illustration of a financial market risk scenario. "
+        f"Theme: {title}. Context: {desc_short}. "
+        f"Cinematic, abstract, sophisticated, dramatic lighting, macro economy and markets feeling, "
+        f"{palette}. No text, no words, no letters, no numbers, no charts, no logos. "
+        f"Wide cinematic banner, premium financial magazine aesthetic."
+    )
+
+
+def seed_from_title(title):
+    s = str(title or "scenario")
+    return abs(sum((i + 1) * ord(ch) for i, ch in enumerate(s))) % 1000000
+
+
+def generate_image_bytes(prompt, seed):
+    encoded = urllib.parse.quote(prompt, safe="")
+    url = (
+        f"https://image.pollinations.ai/prompt/{encoded}"
+        f"?width=1280&height=720&nologo=true&model=flux&seed={seed}"
+    )
+    last_err = None
+    for attempt in range(3):
+        try:
+            r = requests.get(url, timeout=180)
+            if r.status_code == 200 and r.content and len(r.content) > 1000:
+                return r.content
+            last_err = f"HTTP {r.status_code}"
+        except Exception as e:
+            last_err = str(e)
+        time.sleep(5 * (attempt + 1))
+    raise RuntimeError(f"Pollinations ko: {last_err}")
+
+
+def upload_image(supabase, scenario_id, image_bytes):
+    path = f"scenario-{scenario_id}.jpg"
+    storage = supabase.storage.from_(IMAGE_BUCKET)
+    try:
+        storage.upload(path, image_bytes, {"content-type": "image/jpeg", "upsert": "true"})
+    except Exception as e:
+        msg = str(e)
+        if "Duplicate" in msg or "already exists" in msg:
+            try:
+                storage.remove([path])
+            except Exception:
+                pass
+            storage.upload(path, image_bytes, {"content-type": "image/jpeg"})
+        else:
+            raise
+    public = storage.get_public_url(path)
+    if isinstance(public, dict):
+        public = public.get("publicUrl") or public.get("public_url") or ""
+    return public
+
+
+def generate_and_save_image(supabase, scenario_id, scenario):
+    """Genera e carica l'immagine. Ritorna l'URL o None in caso di errore."""
+    try:
+        prompt = build_image_prompt(scenario)
+        img = generate_image_bytes(prompt, seed_from_title(scenario.get("title")))
+        url = upload_image(supabase, scenario_id, img)
+        if not url:
+            return None
+        return url
+    except Exception as e:
+        print(f"   errore generazione immagine: {str(e)[:200]}")
+        return None
+
+
+# ═══════════════════════════════════════════════════════════════
+# SALVATAGGIO
+# ═══════════════════════════════════════════════════════════════
+
 def save_scenario(supabase, s):
+    """Salva lo scenario e ritorna l'id della riga inserita (o None)."""
     row = {
         "title": s.get("title"),
         "icon": s.get("icon", "🌐"),
@@ -233,14 +349,17 @@ def save_scenario(supabase, s):
         "losers": s.get("losers"),
         "hedge_strategy": s.get("hedge_strategy"),
         "early_warning": s.get("early_warning"),
+        "historical_precedents": s.get("historical_precedents"),
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
     try:
-        supabase.table("scenarios_live").insert(row).execute()
-        return True
+        res = supabase.table("scenarios_live").insert(row).execute()
+        if res.data and len(res.data) > 0:
+            return res.data[0].get("id")
+        return None
     except Exception as exc:
         print(f"  errore salvataggio: {exc}")
-        return False
+        return None
 
 
 def main():
@@ -249,13 +368,11 @@ def main():
 
     print("1. Recupero contesto news recenti...")
     news = fetch_recent_news_context(supabase, limit=10)
-    print(f"   {len(news)} news\
-")
+    print(f"   {len(news)} news\n")
 
     print("2. Recupero scenari già esistenti (per evitare duplicati)...")
     existing = fetch_existing_scenario_titles(supabase, limit=60)
-    print(f"   {len(existing)} scenari nel database\
-")
+    print(f"   {len(existing)} scenari nel database\n")
 
     news_context = build_news_context(news) if news else "(nessuna news disponibile)"
     avoid_list = build_avoid_list(existing)
@@ -271,16 +388,28 @@ def main():
     n_sectors = len(scenario.get("affected_sectors") or [])
     n_winners = len(scenario.get("winners") or [])
     n_losers = len(scenario.get("losers") or [])
-    print(f"   {n_sectors} settori, {n_winners} winners, {n_losers} losers\
-")
+    n_precedents = len(scenario.get("historical_precedents") or [])
+    print(f"   {n_sectors} settori, {n_winners} winners, {n_losers} losers, {n_precedents} precedenti storici\n")
 
     print("4. Salvo nel database...")
-    if save_scenario(supabase, scenario):
-        print(f"\
-   Scenario salvato con successo.")
+    scenario_id = save_scenario(supabase, scenario)
+    if not scenario_id:
+        print("   Errore nel salvataggio.")
+        return
+    print(f"   Scenario salvato (id={scenario_id})\n")
+
+    print("5. Genero immagine AI (Pollinations) e la carico su Storage...")
+    image_url = generate_and_save_image(supabase, scenario_id, scenario)
+    if image_url:
+        try:
+            supabase.table("scenarios_live").update({"image_url": image_url}).eq("id", scenario_id).execute()
+            print(f"   Immagine salvata: {image_url[:80]}...")
+        except Exception as e:
+            print(f"   errore update image_url: {e}")
     else:
-        print(f"\
-   Errore nel salvataggio.")
+        print("   Immagine non generata (lo scenario è salvato comunque).")
+
+    print("\nCompletato.")
 
 
 if __name__ == "__main__":
