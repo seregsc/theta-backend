@@ -122,6 +122,7 @@ REGOLE GENERALI
 - Sii fattuale: usa SOLO informazioni presenti nel testo originale. Non inventare numeri, date, eventi, o citazioni.
 - Tono: neutro, informativo, mai sensazionalistico.
 - Non dare consigli espliciti di acquisto/vendita.
+- EVIDENZIA i concetti e i dati chiave (1-2 per blocco) racchiudendoli tra ==doppi uguali==, es. "==+15% di crescita==" o "==taglio dei tassi==". Usa l'evidenziatore con parsimonia, solo sui punti davvero centrali, mai su frasi intere.
 
 INPUT
 Titolo originale (EN): {title_en}
